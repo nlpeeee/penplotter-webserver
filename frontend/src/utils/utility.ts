@@ -1,9 +1,12 @@
+import UIkit from 'uikit';
+
 // Nicer format for file list
-function renderFileListElement(name) {
+export function renderFileListElement(name: string): string {
 
   // Het the file extension
   const re = /(?:\.([^.]+))?$/;
-  const ext = re.exec(name)[1];
+  const match = re.exec(name);
+  const ext = match && match[1] ? match[1] : '';
   let html = ''
 
   switch (ext) {
@@ -49,7 +52,7 @@ function renderFileListElement(name) {
 }
 
 // Simplift notification handling
-function notify(message, status) {
+export function notify(message: string, status: "primary" | "success" | "warning" | "danger" | undefined) {
     UIkit.notification({
       message: message,
       status: status,
@@ -58,10 +61,10 @@ function notify(message, status) {
   });
 }
 
-function scrollLog() {
-  jQuery('.auto-scroll').each(function( index ) {
-    jQuery(this).animate({
-      scrollTop: jQuery(this)[0].scrollHeight
+export function scrollLog() {
+  document.querySelectorAll('.auto-scroll').forEach((el) => {
+    el.animate({
+      scrollTop: el.scrollHeight
     }, 10);
   });
 }
