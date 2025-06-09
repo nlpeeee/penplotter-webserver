@@ -82,6 +82,13 @@ export function deleteFile(element: HTMLElement) {
     .then(function() {});
 }
 
+// Handle file preview
+export function previewFile(element: HTMLElement) {
+  const filename = jQuery(element).data('filename');
+  jQuery('#previewFile').val(filename)
+  UIkit.modal('#modal-previewFile').show();
+}
+
 // Handle file conversion
 export function convertFileModal(element: HTMLElement) {
   const filename = jQuery(element).data('filename');

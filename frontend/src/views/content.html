@@ -329,6 +329,40 @@
       </div>
       <!-- File Conversion Modal -->
 
+      <!-- File Preview Modal -->
+      <div id="modal-previewFile" uk-modal>
+          <div class="uk-modal-dialog uk-card uk-card-default uk-card-small mac-card">
+            <div class="uk-card-header mac-browser-bar">
+              <div class="uk-grid uk-grid-small">
+                <div class="uk-width-auto"><h4>File Preview</h4></div>
+                <div class="uk-width-expand uk-text-right panel-icons">
+                  <a href="#" class="uk-icon-link mac-button mac-close uk-modal-close" title="Close" data-uk-tooltip data-uk-icon="icon: close"></a>
+                </div>
+              </div>
+            </div>
+            <div class="uk-modal-body">
+              <form id="previewData">
+                  <fieldset class="uk-fieldset uk-grid-small" uk-grid>
+
+                    <div class="uk-width-1-1@s">
+                      <label class="uk-form-label" for="convertFile">File Name</label>
+                      <div class="uk-margin-small">
+                          <input id="previewFile" class="uk-input" name="file" type="input" readonly>
+                      </div>
+                    </div>
+
+              </form>
+              
+              <canvas id="canvas"></canvas>
+
+              <div class="uk-text-right uk-margin-small-top">
+                  <button class="uk-button uk-button-primary startPreview lock-edit" type="button">Preview</button>
+              </div>
+            </div>
+          </div>
+      </div>
+      <!-- File Preview Modal -->
+
       <!-- config modal -->
       <div id="modal-configFile" uk-modal>
           <div class="uk-modal-dialog uk-card uk-card-default uk-card-small mac-card">

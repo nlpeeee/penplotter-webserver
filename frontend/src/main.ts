@@ -17,6 +17,7 @@ import {
   updateFiles,
   selectFile,
   deleteFile,
+  previewFile,
   convertFileModal,
   convertFile,
   updatePorts,
@@ -138,6 +139,7 @@ window.addEventListener("DOMContentLoaded", () => {
   onClick(".updatePorts", () => updatePorts());
   onDelegatedClick(".selectFile", (_e, el) => selectFile(el));
   onDelegatedClick(".deleteFile", (_e, el) => deleteFile(el));
+  onDelegatedClick(".previewFile", (_e, el) => previewFile(el));
   onDelegatedClick(".convertFile", (_e, el) => convertFileModal(el));
   onDelegatedClick(".startConversion", () => convertFile());
   onClick(".clearLog", () => clearLog());
