@@ -214,6 +214,28 @@ def delete_file():
             socketio.emit('error', {'data': 'The file does not exist'})
             return 'The file does not exist'
 
+# Fetch Files for preview
+@app.route('/start_preview', methods=['POST'])
+def start_preview():
+    if request.method == "POST":
+        data = request.get_json()
+        file = data.get('file')
+        print('File to preview:', file)
+    
+        if file:
+            file_path = os.path.join(app.config['UPLOAD_PATH'], file)
+            if os.path.exists(file_path):
+                # Read the file and return its content
+                with open(file_path, 'r') as f:
+                    content = f.read()
+                return content
+            else:
+                return 'File not found', 404
+        else:
+            return 'No file specified', 400
+    else:
+        return 'No file specified', 400
+
 # Get Plotter settings from UI
 @app.route('/start_plot', methods=['GET', 'POST'])
 def start_plot():

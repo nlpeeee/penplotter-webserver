@@ -35,6 +35,7 @@ import {
   actionTasmota,
   actionOpenConfig,
   saveConfig,
+  startPreview,
 } from "./core/actions.ts";
 
 import { version } from "../package.json";
@@ -152,4 +153,5 @@ window.addEventListener("DOMContentLoaded", () => {
   onClick(".actionTasmota", () => actionTasmota());
   onClick(".actionOpenConfig", () => actionOpenConfig());
   onClick(".saveConfig", () => saveConfig());
+  onClick(".startPreview", () => startPreview());
 });

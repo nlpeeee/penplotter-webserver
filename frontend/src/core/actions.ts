@@ -5,6 +5,7 @@ const jQuery = $;
 
 import { notify } from '../utils/utility';
 import { updatePorts } from './plotter';
+import { HPGLViewer } from '../display/hpgl';
 
 // Display card
 export function closeCard(element: HTMLElement) {
@@ -170,4 +171,33 @@ export function saveConfig() {
       notify(error, 'danger')
       console.error(error);
     });
+}
+
+export function startPreview() {
+  const previewFile = jQuery('#previewFile').val();
+  console.log('previewFile', previewFile);
+
+  if (previewFile == '') {
+    notify('No *.hpgl file selected', 'danger');
+    return false;
+  }
+
+  axios.post('/start_preview', { file: previewFile })
+    .then(function(response) {
+      // handle success
+      if (response.status == 200) {
+        // console.log(response);
+        notify('Preview started', 'success');
+
+        // Show preview
+        const canvas = document.getElementById('hpglCanvas') as HTMLCanvasElement;
+        const hpglViewer = new HPGLViewer(canvas);
+        hpglViewer.loadHPGL(response.data);
+      }
+    })
+    .catch(function(error) {
+      notify(error, 'danger')
+      console.error(error);
+    });
+  
 }

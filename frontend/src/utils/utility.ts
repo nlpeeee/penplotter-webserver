@@ -11,6 +11,7 @@ export function renderFileListElement(name: string): string {
 
   switch (ext) {
     case 'hpgl':
+    case 'hpg':
       html = `<div class="uk-grid uk-grid-small">
                 <div class="uk-width-expand">
                   <a href="#" class="selectFile" data-filename="${name}">
