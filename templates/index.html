@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
     <head>
-        <title>Plotter Webserver</title>
+        <title>PCP</title>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
 
@@ -19,7 +19,7 @@
           <nav class="uk-navbar uk-light" data-uk-navbar="mode:click; duration: 250">
             <div class="uk-navbar-left">
               <div class="uk-navbar-item uk-hidden@m">
-                <a class="uk-logo" href="#"><img class="custom-logo" src="{{url_for('static', filename='img/logo.png')}}" alt=""></a>
+                <a class="uk-logo pcp-mobile-brand" href="#"><img class="pcp-logo pcp-logo-mobile" src="{{url_for('static', filename='img/pcp-logo.png')}}?v={{ version }}" alt="PCP logo"></a>
               </div>
               <ul class="uk-navbar-nav uk-visible@m">
                 <li><a href="#"><span class="plotter_name">Default Plotter</span></a></li>
@@ -46,12 +46,11 @@
 
       <!-- LEFT BAR -->
       <aside id="left-col" class="uk-light uk-visible@m">
-        <div class="left-logo uk-flex uk-flex-middle">
-          <img class="custom-logo" src="{{url_for('static', filename='img/logo.png')}}" alt="">
+        <div class="left-logo uk-flex uk-flex-middle uk-flex-center">
+          <img class="pcp-logo pcp-logo-sidebar" src="{{url_for('static', filename='img/pcp-logo.png')}}?v={{ version }}" alt="PCP logo">
         </div>
         <div class="left-content-box content-box-dark">
-          <img src="{{url_for('static', filename='img/user.png')}}" alt="" class="profile-img">
-          <h4 class="uk-text-center uk-margin-remove-vertical text-light">Web Plotter</h4>
+          <h4 class="uk-text-center uk-margin-remove-vertical text-light">PCP</h4>
         </div>
 
         <div class="left-nav-wrap">
@@ -291,7 +290,7 @@
           </div>
           <footer class="uk-section uk-section-small uk-text-center">
             <hr>
-            <p class="uk-text-small uk-text-center">Copyright 2021 - <a href="https://github.com/henrytriplette/penplotter-webserver">Created by Henry Triplette</a></p>
+            <p class="uk-text-small uk-text-center">PCP — based on <a href="https://github.com/henrytriplette/penplotter-webserver">WebPlot</a>, created by Henry Triplette (2021) — <a href="{{ url_for('license_text') }}">MIT License</a></p>
           </footer>
         </div>
       </div>

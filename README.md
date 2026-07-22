@@ -1,20 +1,19 @@
-# WebPlot - A Web interface for Pen Plotters
+# PCP
 
-Python webservice to simplify working with pen plotters and vinyl cutters:
+PCP is a Python web service for working with pen plotters and vinyl cutters:
+
 - Supported devices: **Creation PCut CT-1200**, Graphtec MP4200, HP 7475A
 - Created for Raspberry Pi on a local LAN — no authentication or reverse proxy needed.
 - Upload *.SVG and *.HPGL files.
-- Convert *.SVG into roll-oriented *.HPGL using a live millimetre workspace; [vpype](https://github.com/abey79/vpype) flattens curves and WebPlot applies the exact displayed transform.
+- Convert *.SVG into roll-oriented *.HPGL using a live millimetre workspace; [vpype](https://github.com/abey79/vpype) flattens curves and PCP applies the exact displayed transform.
 - **Interactive cut workspace** with linked scaling, placement, 90° rotation, mirroring, roll bounds, pan/zoom, travel paths, and animated path order.
 - **Persistent job queue and history** — jobs enqueue, exactly one worker owns the serial port at a time.
 - Telegram notification on print end
 - Poweroff your plotter on print end using a Tasmota-enabled Sonoff controller
 
-[![Image of WebPlot - A Web interface for Pen Plotter](./docs/img/screenshot.png)](https://github.com/henrytriplette/penplotter-webserver)
-
 ## Installation
 
-An install script is included.
+The legacy installation and service names remain `webplotter` for compatibility. An install script is included.
 From the home directory, run:
 
 ```bash
@@ -92,12 +91,12 @@ The `creation_1200` profile sends **only** the raw HPGL payload — no
 HP-specific ESC initialisation, status, buffer, or abort commands are ever
 sent to the cutter.
 
-### ⚠️  WARNING — Do not run ser2net / RFC 2217 alongside WebPlot
+### ⚠️  WARNING — Do not run ser2net / RFC 2217 alongside PCP
 
 Running `ser2net` (or any RFC 2217 TCP serial redirector) against the same
-port while WebPlot is active **will corrupt the data stream** and may cause
+port while PCP is active **will corrupt the data stream** and may cause
 the cutter to behave erratically.  Ensure ser2net is stopped before starting
-WebPlot:
+PCP:
 
 ```bash
 sudo systemctl stop ser2net
@@ -157,5 +156,10 @@ python -m unittest discover -s tests -v
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
 
+## Attribution
+
+PCP is a derivative of [WebPlot](https://github.com/henrytriplette/penplotter-webserver), created by Henry Triplette in 2021. The original project name, repository reference, and contribution history are retained here for attribution and operational compatibility. See [NOTICE](NOTICE) for a concise attribution notice.
+
 ## License
-[MIT](https://choosealicense.com/licenses/mit/)
+
+PCP and the original WebPlot software are distributed under the [MIT License](LICENSE). The bundled license retains the original `Copyright (c) 2021 Henry Triplette` notice.

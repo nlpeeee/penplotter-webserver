@@ -49,7 +49,7 @@ def init_db():
             """
             UPDATE jobs
             SET status='failed', finished_at=CURRENT_TIMESTAMP,
-                error='WebPlot restarted during transmission'
+                error='PCP restarted during transmission'
             WHERE status='transmitting'
             """
         )

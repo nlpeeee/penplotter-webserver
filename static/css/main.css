@@ -121,20 +121,30 @@ body {
 }
 
 .left-logo {
-  /* navbar height */
-  height: 52px;
-  line-height: 52px;
-  padding: 0 20px;
+  min-height: 138px;
+  padding: 10px 10px 8px;
+  box-sizing: border-box;
 }
 
-.custom-logo {
-  height: 32px;
-}
-
-.profile-img {
-  width: 60px;
-  margin: 0 auto 10px auto;
+.pcp-logo {
   display: block;
+  object-fit: contain;
+}
+
+.pcp-logo-sidebar {
+  width: 218px;
+  height: auto;
+  max-height: 120px;
+}
+
+.pcp-logo-mobile {
+  width: auto;
+  height: 44px;
+  max-width: 84px;
+}
+
+.pcp-mobile-brand {
+  padding: 3px 0;
 }
 
 .panel-icons {

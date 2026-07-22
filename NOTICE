@@ -1,0 +1,9 @@
+PCP (Plotter Cutter Pro)
+
+PCP is a derivative of the WebPlot project created by Henry Triplette:
+https://github.com/henrytriplette/penplotter-webserver
+
+The original software is Copyright (c) 2021 Henry Triplette and is licensed
+under the MIT License. See LICENSE for the complete license text. Subsequent
+PCP modifications and their contributors are recorded in this repository's
+version history.

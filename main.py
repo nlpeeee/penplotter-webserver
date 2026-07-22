@@ -143,7 +143,7 @@ def _vpype_executable():
     executable = shutil.which('vpype')
     if executable:
         return executable
-    raise ConversionError('vpype is not installed in the webplotter environment.')
+    raise ConversionError('vpype is not installed in the PCP runtime environment.')
 
 
 def svg_geometry_dimensions(file):
@@ -273,13 +273,19 @@ def index():
     try:
         asset_mtime = max(
             int(os.path.getmtime(os.path.join(app.static_folder, asset)))
-            for asset in ('main.js', 'utility.js')
+            for asset in ('main.js', 'utility.js', 'css/main.css', 'img/pcp-logo.png')
         )
         version = f'{version}-{asset_mtime}'
     except OSError:
         pass
 
     return render_template('index.html', files=files, configuration=configuration, version=version)
+
+
+@app.route('/license')
+def license_text():
+    """Serve the bundled license referenced by the application footer."""
+    return send_from_directory(app.root_path, 'LICENSE', mimetype='text/plain')
 
 # Upload
 @app.route('/', methods=['POST'])
