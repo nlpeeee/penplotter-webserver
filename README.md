@@ -4,7 +4,8 @@ Python webservice to simplify working with pen plotters and vinyl cutters:
 - Supported devices: **Creation PCut CT-1200**, Graphtec MP4200, HP 7475A
 - Created for Raspberry Pi on a local LAN — no authentication or reverse proxy needed.
 - Upload *.SVG and *.HPGL files.
-- Convert *.SVG into *.HPGL files using [vpype](https://github.com/abey79/vpype)
+- Convert *.SVG into roll-oriented *.HPGL using a live millimetre workspace; [vpype](https://github.com/abey79/vpype) flattens curves and WebPlot applies the exact displayed transform.
+- **Interactive cut workspace** with linked scaling, placement, 90° rotation, mirroring, roll bounds, pan/zoom, travel paths, and animated path order.
 - **Persistent job queue and history** — jobs enqueue, exactly one worker owns the serial port at a time.
 - Telegram notification on print end
 - Poweroff your plotter on print end using a Tasmota-enabled Sonoff controller
@@ -120,10 +121,23 @@ Clicking **Stop** on a transmitting job sets the cancellation flag; no further
 bytes are sent, but any commands already in the cutter's internal buffer will
 still execute.
 
+The large **CANCEL CUT** button also interrupts a blocked serial write. The
+**RESET USB / COM** action cancels transmission, resets only the configured
+and validated `/dev/serial/by-id/...` USB adapter, waits for it to return, and
+probes it at the PCut serial settings. It does not power-cycle the cutter.
+
+## Cut Workspace
+
+Click **Preview** (or the bolt beside an SVG) to open the workspace. SVG files
+can be scaled, positioned, rotated, and mirrored before **Generate HPGL** is
+used. Width and height stay linked. The loaded roll width is remembered by the
+browser and the feed length grows to fit the job. A red path is outside the
+roll and cannot be generated. HPGL files open in an exact read-only view.
+
 ## Running Tests
 
 ```bash
-pytest tests/test_creation_1200.py -v
+python -m unittest discover -s tests -v
 ```
 
 ## ToDO
@@ -136,6 +150,9 @@ pytest tests/test_creation_1200.py -v
 - [x] Creation PCut CT-1200 support
 - [x] Persistent job queue + history (SQLite)
 - [x] Stable /dev/serial/by-id port support
+- [x] SVG and HPGL cut-path preview
+- [x] Interactive millimetre workspace and animated cut-order preview
+- [x] Immediate cancel and guarded USB serial reset controls
 
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.

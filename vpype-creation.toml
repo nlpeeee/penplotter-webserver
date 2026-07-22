@@ -1,0 +1,12 @@
+[device.creation_1200]
+name = "Creation PCut CT-1200"
+plotter_unit_length = "0.025mm"
+pen_count = 1
+
+[[device.creation_1200.paper]]
+name = "flex"
+y_axis_up = true
+paper_orientation = "portrait"
+origin_location = ["0mm", "0mm"]
+origin_location_reference = "botleft"
+final_pu_params = "0,0"

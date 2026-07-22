@@ -1,0 +1,159 @@
+"""Tests for canonical SVG workspace conversion and its Flask interface."""
+
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import main
+import workspace
+
+
+SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="50mm" '
+    'viewBox="0 0 100 50"><g transform="translate(10 5)">'
+    '<path d="M0 0 C20 0 60 40 80 40 L0 40 Z"/></g></svg>'
+)
+
+
+class TestConversion(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.source = Path(self.directory.name, 'design.svg')
+        self.source.write_text(SVG)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def test_success_is_atomic_and_preserves_source(self):
+        output, width, height = main.convert(str(self.source), 300, 150)
+        hpgl = Path(output).read_bytes()
+
+        self.assertTrue(self.source.exists())
+        self.assertEqual(Path(output).name, 'design_300x150mm.hpgl')
+        self.assertAlmostEqual(width, 300, places=1)
+        self.assertAlmostEqual(height, 150, places=1)
+        self.assertTrue(hpgl.startswith(b'IN;SP1;PA;'))
+        self.assertIn(b'PU', hpgl)
+        self.assertIn(b'PD', hpgl)
+        self.assertNotIn(b'PS', hpgl)
+        self.assertEqual(list(Path(self.directory.name).glob('.hpgl-conversion-*')), [])
+
+    def test_invalid_dimensions_and_roll_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'must be a number'):
+            main.convert(str(self.source), 'wide', 100)
+        with self.assertRaisesRegex(ValueError, 'greater than zero'):
+            main.convert(str(self.source), 0, 100)
+        with self.assertRaisesRegex(ValueError, 'Roll width'):
+            main.convert(str(self.source), 100, 100, roll_width_mm=1201)
+        with self.assertRaisesRegex(ValueError, 'outside the loaded roll'):
+            main.convert(str(self.source), 300, 150, roll_width_mm=250)
+        with self.assertRaisesRegex(ValueError, 'cannot be negative'):
+            main.convert(str(self.source), 100, 50, offset_x_mm=-1)
+
+    def test_server_preserves_aspect_ratio_for_unlinked_input(self):
+        _output, width, height = main.convert(str(self.source), 200, 200)
+        self.assertAlmostEqual(width, 200, places=1)
+        self.assertAlmostEqual(height, 100, places=1)
+
+    def test_transform_options_are_written_into_exact_hpgl(self):
+        output, width, height = main.convert(
+            str(self.source), 200, 100,
+            roll_width_mm=1200, offset_x_mm=10, offset_y_mm=5,
+            rotation=90, mirror_x='on', mirror_y='',
+        )
+        paths, _warnings = workspace.load_hpgl_paths(output)
+        bounds = workspace._bounds(paths)
+        self.assertAlmostEqual(width, 100, places=1)
+        self.assertAlmostEqual(height, 200, places=1)
+        self.assertAlmostEqual(bounds[0], 10, places=1)
+        self.assertAlmostEqual(bounds[1], 5, places=1)
+        self.assertIn('_r90_mx_at10x5.hpgl', output)
+
+    @patch.object(workspace.os, 'replace', side_effect=OSError('disk full'))
+    def test_publish_failure_preserves_source_and_removes_temporary(self, _replace):
+        with self.assertRaisesRegex(ValueError, 'disk full'):
+            main.convert(str(self.source), 100, 50)
+        self.assertTrue(self.source.exists())
+        self.assertEqual(list(Path(self.directory.name).glob('.hpgl-conversion-*')), [])
+
+
+class TestConversionEndpoint(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.original_upload_path = main.app.config['UPLOAD_PATH']
+        main.app.config['UPLOAD_PATH'] = self.directory.name
+        self.client = main.app.test_client()
+
+    def tearDown(self):
+        main.app.config['UPLOAD_PATH'] = self.original_upload_path
+        self.directory.cleanup()
+
+    @patch.object(main, 'convert')
+    def test_endpoint_passes_complete_workspace_transform(self, convert):
+        output = Path(self.directory.name, 'art_150x300mm_r90.hpgl')
+        convert.return_value = str(output), 150.0, 300.0
+        response = self.client.post('/start_conversion', data={
+            'file': 'art.svg', 'target_width_mm': '300', 'target_height_mm': '150',
+            'roll_width_mm': '610', 'offset_x_mm': '12.5', 'offset_y_mm': '7',
+            'rotation': '90', 'mirror_x': 'on',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()['filename'], output.name)
+        kwargs = convert.call_args.kwargs
+        self.assertEqual(kwargs['roll_width_mm'], '610')
+        self.assertEqual(kwargs['rotation'], '90')
+        self.assertEqual(kwargs['mirror_x'], 'on')
+
+    @patch.object(main, 'convert', side_effect=main.ConversionError('conversion failed'))
+    def test_endpoint_exposes_internal_conversion_error(self, _convert):
+        response = self.client.post('/start_conversion', data={
+            'file': 'art.svg', 'target_width_mm': '300', 'target_height_mm': '150',
+        })
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.get_json()['error'], 'conversion failed')
+
+    def test_endpoint_rejects_path_traversal(self):
+        response = self.client.post('/start_conversion', data={
+            'file': '../art.svg', 'target_width_mm': '300', 'target_height_mm': '150',
+        })
+        self.assertEqual(response.status_code, 400)
+
+    def test_workspace_endpoint_returns_svg_geometry_and_travel(self):
+        Path(self.directory.name, 'art.svg').write_text(SVG)
+        response = self.client.get('/cut_workspace/art.svg')
+        body = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body['source_type'], 'svg')
+        self.assertFalse(body['read_only'])
+        self.assertGreater(body['point_count'], 3)
+        self.assertEqual(body['units'], 'mm')
+        self.assertIn('travel_paths', body)
+
+    def test_workspace_endpoint_returns_exact_read_only_hpgl(self):
+        Path(self.directory.name, 'art.hpgl').write_bytes(b'IN;PU400,800;PD800,800,800,1200;PU;')
+        response = self.client.get('/cut_workspace/art.hpgl')
+        body = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(body['read_only'])
+        self.assertEqual(body['cut_paths'][0][0], [10.0, 20.0])
+        self.assertEqual(body['travel_paths'][0], [[0.0, 0.0], [10.0, 20.0]])
+
+    @patch.object(main, 'svg_geometry_dimensions', return_value=(210.0, 105.0))
+    def test_dimensions_endpoint_returns_aspect_ratio(self, _dimensions):
+        Path(self.directory.name, 'art.svg').write_text('<svg/>')
+        response = self.client.get('/svg_dimensions/art.svg')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()['aspect_ratio'], 2.0)
+
+
+if __name__ == '__main__':
+    unittest.main()

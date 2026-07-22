@@ -1,4 +1,8 @@
 import os
+import math
+import shutil
+import sys
+import tempfile
 import time
 import threading
 import subprocess
@@ -12,6 +16,9 @@ import globals
 import send2serial
 import tasmota
 import jobqueue
+import serial_control
+import workspace
+from preview import PreviewError, hpgl_preview, svg_preview
 
 # Read Configuration
 config = configparser.ConfigParser()
@@ -22,7 +29,7 @@ app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024
 app.config['UPLOAD_EXTENSIONS'] = ['.svg', '.hpgl']
 app.config['UPLOAD_PATH'] = 'uploads'
 app.config['SECRET_KEY'] = '#tiUJ791&jPYI9N7Kj'
-app.config['DEBUG'] = True
+app.config['DEBUG'] = False
 
 socketio = SocketIO(app)
 
@@ -122,49 +129,47 @@ def make_tree(path):
                     tree['content'].append(dict(name=name))
     return tree
 
-def convert(file, pagesize = 'a4', svgscale = 'a4', pageorientation = 'landscape'):
-    if file:
+class ConversionError(RuntimeError):
+    """An SVG could not be converted into a valid HPGL file."""
 
-        filename, file_extension = os.path.splitext(file)
 
-        outputFile = filename + '_converted_' + pageorientation + '_' + svgscale + '_' + pagesize + '.hpgl'
+def _vpype_executable():
+    """Find vpype beside the running Python before consulting PATH."""
+    scripts_dir = os.path.dirname(sys.executable)
+    for executable_name in ('vpype', 'vpype.exe'):
+        candidate = os.path.join(scripts_dir, executable_name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    executable = shutil.which('vpype')
+    if executable:
+        return executable
+    raise ConversionError('vpype is not installed in the webplotter environment.')
 
-        # Scale svg to desired paper size
-        args = 'vpype';
-        args += ' read "' + os.getcwd() + '/' + str(file) + '"'; #Read input svg
 
-        if (pageorientation == 'landscape'):
-            if (svgscale == 'a3'):
-                args += ' scaleto 39cm 26.7cm';
-            elif (svgscale == 'a4'):
-                args += ' scaleto 27.7cm 19cm';
-        else:
-            if (svgscale == 'a3'):
-                args += ' scaleto 27.7cm 40cm';
-            elif (svgscale == 'a4'):
-                args += ' scaleto 19cm 27.7cm';
+def svg_geometry_dimensions(file):
+    """Return the visible vector geometry's width and height in millimetres."""
+    try:
+        payload = workspace.workspace_payload(file)
+    except Exception as exc:
+        raise ConversionError('Could not read the SVG geometry: ' + str(exc)) from exc
+    return payload['width_mm'], payload['height_mm']
 
-        args += ' write --device hp7475a';
 
-        args += ' --page-size ' + str(pagesize);
+def _size_label(value):
+    return f'{value:.1f}'.rstrip('0').rstrip('.')
 
-        if (pageorientation == 'landscape'):
-            args += ' --landscape';
 
-        args += ' --center';
-        args += ' "' + os.getcwd() + '/' + str(outputFile) + '"'
-
-        rendering = subprocess.Popen(args, shell=True)
-        rendering.wait() # Hold on till process is finished
-
-        # Delete file
-        if os.path.exists(file):
-            os.remove(file)
-            socketio.emit('status_log', {'data': 'Deleted SVG: ' + str(file)})
-        else:
-            socketio.emit('error', {'data': 'The file does not exist'})
-
-        return '- Exported ' + str(outputFile)
+def convert(file, target_width_mm, target_height_mm, **options):
+    """Create HPGL from the same millimetre transform shown in the workspace."""
+    values = dict(options)
+    values['target_width_mm'] = target_width_mm
+    values['target_height_mm'] = target_height_mm
+    try:
+        transform = workspace.parse_transform(values)
+        output_file, metadata = workspace.convert_svg(os.path.abspath(file), transform)
+    except workspace.WorkspaceError as exc:
+        raise ValueError(str(exc)) from exc
+    return output_file, metadata['width_mm'], metadata['height_mm']
 
 @app.errorhandler(413)
 def too_large(e):
@@ -172,33 +177,74 @@ def too_large(e):
 
 @app.route('/preview/<filename>')
 def preview_file(filename):
-    """Return an SVG preview of the given upload. HPGL is converted via vpype."""
-    import tempfile
+    """Return a dependency-free SVG rendering of the file's cut lines."""
     filename = secure_filename(filename)
     filepath = os.path.join(app.config['UPLOAD_PATH'], filename)
     if not os.path.exists(filepath):
         abort(404)
     ext = os.path.splitext(filename)[1].lower()
-    if ext == '.svg':
-        return send_from_directory(app.config['UPLOAD_PATH'], filename, mimetype='image/svg+xml')
-    elif ext == '.hpgl':
-        with tempfile.NamedTemporaryFile(suffix='.svg', delete=False) as tmp:
-            tmp_path = tmp.name
-        try:
-            result = subprocess.run(
-                ['vpype', 'read', filepath, 'write', '--device', 'svg', tmp_path],
-                capture_output=True, timeout=60
-            )
-            if result.returncode != 0:
-                abort(500)
-            with open(tmp_path, 'rb') as f:
-                svg_data = f.read()
-        finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-        return Response(svg_data, mimetype='image/svg+xml')
-    else:
+    if ext not in app.config['UPLOAD_EXTENSIONS']:
         abort(400)
+
+    try:
+        with open(filepath, 'rb') as preview_source:
+            data = preview_source.read()
+        result = svg_preview(data) if ext == '.svg' else hpgl_preview(data)
+    except PreviewError as exc:
+        return jsonify({'error': str(exc)}), 422
+    except OSError:
+        return jsonify({'error': 'The preview file could not be read.'}), 500
+
+    response = Response(result.svg, mimetype='image/svg+xml')
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['X-Preview-Paths'] = str(result.path_count)
+    if ext == '.hpgl':
+        # Creation/vpype HPGL uses 40 plotter units per millimetre.
+        response.headers['X-Preview-Width-MM'] = f'{result.width_units / 40.0:.1f}'
+        response.headers['X-Preview-Height-MM'] = f'{result.height_units / 40.0:.1f}'
+    if result.warnings:
+        response.headers['X-Preview-Warning'] = '; '.join(result.warnings)
+    return response
+
+
+@app.route('/cut_workspace/<filename>')
+def cut_workspace(filename):
+    """Return ordered millimetre geometry for the interactive cutter workspace."""
+    safe_filename = secure_filename(filename)
+    if not safe_filename or safe_filename != filename:
+        return jsonify({'error': 'Invalid preview filename.'}), 400
+    filepath = os.path.join(app.config['UPLOAD_PATH'], safe_filename)
+    if not os.path.isfile(filepath):
+        return jsonify({'error': 'The selected file does not exist.'}), 404
+    try:
+        payload = workspace.workspace_payload(filepath)
+    except workspace.WorkspaceError as exc:
+        return jsonify({'error': str(exc)}), 422
+    response = jsonify(payload)
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.route('/svg_dimensions/<filename>')
+def svg_dimensions(filename):
+    """Return the SVG cut geometry's natural aspect ratio and dimensions."""
+    safe_filename = secure_filename(filename)
+    if not safe_filename or safe_filename != filename or not safe_filename.lower().endswith('.svg'):
+        return jsonify({'error': 'Invalid SVG filename.'}), 400
+    filepath = os.path.join(app.config['UPLOAD_PATH'], safe_filename)
+    if not os.path.isfile(filepath):
+        return jsonify({'error': 'The selected SVG file does not exist.'}), 404
+    try:
+        width, height = svg_geometry_dimensions(filepath)
+    except ConversionError as exc:
+        return jsonify({'error': str(exc)}), 422
+    return jsonify({
+        'width_mm': round(width, 2),
+        'height_mm': round(height, 2),
+        'aspect_ratio': width / height,
+        'max_width_mm': 1200,
+        'max_height_mm': 20000,
+    })
 
 @app.route('/')
 def index():
@@ -220,6 +266,18 @@ def index():
                                           stderr=subprocess.DEVNULL).decode().strip()
     except Exception:
         version = '1'
+
+    # Include the live asset timestamp as deployments may update files without
+    # creating a git commit on the plotter. This prevents browsers retaining an
+    # older UI under the same commit-based cache key.
+    try:
+        asset_mtime = max(
+            int(os.path.getmtime(os.path.join(app.static_folder, asset)))
+            for asset in ('main.js', 'utility.js')
+        )
+        version = f'{version}-{asset_mtime}'
+    except OSError:
+        pass
 
     return render_template('index.html', files=files, configuration=configuration, version=version)
 
@@ -300,11 +358,24 @@ def start_plot():
 # cannot recall commands already in the cutter's hardware buffer).
 @app.route('/stop_plot', methods=['GET', 'POST'])
 def stop_plot():
-    if request.method == "GET":
-        if globals.active_job_id is not None:
-            jobqueue.request_cancel(globals.active_job_id)
-        globals.printing = False
-        return 'Plotter Stopped'
+    active_job_id = globals.active_job_id
+    changed = False
+    if active_job_id is not None:
+        changed = jobqueue.request_cancel(active_job_id)
+    globals.printing = False
+    interrupted = serial_control.cancel_active_write()
+    socketio.emit('status_log', {
+        'data': 'Cut cancelled. The cutter may finish commands already in its internal buffer.'
+    })
+    socketio.emit('plot_cancelled', {'job_id': active_job_id, 'buffer_warning': True})
+    _emit_job_update()
+    return jsonify({
+        'status': 'cancel_requested' if active_job_id is not None else 'idle',
+        'job_id': active_job_id,
+        'changed': changed,
+        'write_interrupted': interrupted,
+        'warning': 'The cutter may finish commands already in its internal buffer.',
+    })
 
 # Cancel a queued job or stop future transmission for the active job.
 @app.route('/cancel_job', methods=['POST'])
@@ -316,6 +387,7 @@ def cancel_job():
     changed = jobqueue.request_cancel(int(job_id))
     if changed and globals.active_job_id == int(job_id):
         globals.printing = False
+        serial_control.cancel_active_write()
     _emit_job_update()
     return ('Cancelled' if changed else 'Not found or already running'), (200 if changed else 404)
 
@@ -328,14 +400,88 @@ def job_history():
 @app.route('/start_conversion', methods=['GET', 'POST'])
 def start_conversion():
     if request.method == "POST":
-        file = app.config['UPLOAD_PATH'] + '/' + request.form.get('file')
-        pagesize = request.form.get('pagesize')
-        svgscale = request.form.get('svgscale')
-        pageorientation = request.form.get('pageorientation')
+        requested_filename = request.form.get('file', '')
+        filename = secure_filename(requested_filename)
+        if not filename or filename != requested_filename:
+            return jsonify({'error': 'Invalid SVG filename.'}), 400
+        file = os.path.join(app.config['UPLOAD_PATH'], filename)
+        target_width = request.form.get('target_width_mm')
+        target_height = request.form.get('target_height_mm')
 
-        output = convert(file, pagesize, svgscale, pageorientation)
+        try:
+            output, output_width, output_height = convert(
+                file,
+                target_width,
+                target_height,
+                roll_width_mm=request.form.get('roll_width_mm', 1200),
+                offset_x_mm=request.form.get('offset_x_mm', 0),
+                offset_y_mm=request.form.get('offset_y_mm', 0),
+                rotation=request.form.get('rotation', 0),
+                mirror_x=request.form.get('mirror_x', ''),
+                mirror_y=request.form.get('mirror_y', ''),
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            return jsonify({'error': str(exc)}), 400
+        except ConversionError as exc:
+            socketio.emit('error', {'data': str(exc)})
+            return jsonify({'error': str(exc)}), 500
 
-        return output
+        output_filename = os.path.basename(output)
+        socketio.emit('status_log', {'data': 'Created HPGL: ' + output_filename})
+        return jsonify({
+            'message': (
+                'Created ' + output_filename + ' at '
+                + _size_label(output_width) + ' × ' + _size_label(output_height) + ' mm'
+            ),
+            'filename': output_filename,
+            'width_mm': round(output_width, 2),
+            'height_mm': round(output_height, 2),
+        })
+
+
+@app.route('/reset_plotter_connection', methods=['POST'])
+def reset_plotter_connection():
+    """Cancel transmission and reset only the configured USB serial adapter."""
+    data = request.get_json(silent=True) or request.form
+    selected_port = data.get('port', '')
+    configured_port = config['plotter'].get('port', '')
+    baudrate = int(config['plotter'].get('baudrate', '9600'))
+
+    with globals.active_serial_lock:
+        if globals.reset_in_progress:
+            return jsonify({'error': 'A USB reset is already in progress.'}), 409
+        globals.reset_in_progress = True
+
+    phases = []
+
+    def emit_phase(item):
+        phases.append(item)
+        socketio.emit('connection_reset', item)
+        socketio.emit('status_log', {'data': item['message']})
+
+    try:
+        active_job_id = globals.active_job_id
+        if active_job_id is not None:
+            jobqueue.request_cancel(active_job_id)
+        globals.printing = False
+        serial_control.cancel_active_write()
+        emit_phase({
+            'phase': 'cancelling',
+            'message': 'Cancelling any active transmission',
+            'status': 'working',
+        })
+        reset_phases = serial_control.reset_usb_serial(
+            selected_port, configured_port, baudrate=baudrate, progress=emit_phase
+        )
+        _emit_job_update()
+        return jsonify({'status': 'ready', 'port': selected_port, 'phases': phases})
+    except serial_control.SerialResetError as exc:
+        item = {'phase': 'error', 'message': str(exc), 'status': 'error'}
+        emit_phase(item)
+        return jsonify({'error': str(exc), 'phases': phases}), 422
+    finally:
+        with globals.active_serial_lock:
+            globals.reset_in_progress = False
 
 # Start reboot sequence
 @app.route('/action_reboot', methods=['GET', 'POST'])
@@ -432,4 +578,7 @@ if __name__ == "__main__":
     worker.start()
 
     # app.run(host='127.0.0.1',port=5000,debug=True,threaded=True)
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
+    socketio.run(
+        app, host='0.0.0.0', port=5000,
+        debug=False, use_reloader=False, allow_unsafe_werkzeug=True,
+    )

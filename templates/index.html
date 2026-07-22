@@ -9,7 +9,7 @@
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.7.2/dist/css/uikit.min.css" />
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/dropzone/5.7.1/min/dropzone.min.css">
 
-        <link rel="stylesheet" href="{{url_for('static', filename='css/main.css')}}">
+        <link rel="stylesheet" href="{{url_for('static', filename='css/main.css')}}?v={{ version }}">
     </head>
     <body>
 
@@ -237,6 +237,19 @@
                   </div>
                 </div>
                 <div id="statusLog-card" class="uk-card-body">
+                  <div class="cut-safety-controls uk-grid-small" uk-grid>
+                    <div class="uk-width-2-3@s">
+                      <button id="cancelCutButton" class="stopPlot uk-button uk-button-danger uk-button-large uk-width-1-1" type="button" disabled>
+                        <span data-uk-icon="icon: close; ratio: 1.3"></span> <span class="cancelCutLabel">CANCEL CUT</span>
+                      </button>
+                    </div>
+                    <div class="uk-width-1-3@s">
+                      <button id="resetConnectionButton" class="uk-button uk-button-default uk-button-large uk-width-1-1" type="button">
+                        <span data-uk-icon="icon: refresh"></span> <span class="resetConnectionLabel">RESET USB / COM</span>
+                      </button>
+                    </div>
+                  </div>
+                  <p id="connectionResetStatus" class="uk-text-small uk-text-muted uk-margin-small"></p>
                   <div class="chart-container uk-panel uk-panel-scrollable auto-scroll">
                     <code id="statusLog"></code>
                   </div>
@@ -313,7 +326,7 @@
 
       <!-- Preview Modal -->
       <div id="modal-preview" uk-modal>
-          <div class="uk-modal-dialog uk-card uk-card-default uk-card-small mac-card" style="width:auto; max-width:90vw;">
+          <div class="uk-modal-dialog uk-card uk-card-default uk-card-small mac-card cut-workspace-dialog">
             <div class="uk-card-header mac-browser-bar">
               <div class="uk-grid uk-grid-small">
                 <div class="uk-width-expand"><h4 id="previewModalTitle">Preview</h4></div>
@@ -322,11 +335,82 @@
                 </div>
               </div>
             </div>
-            <div class="uk-modal-body uk-text-center">
-              <div id="previewContainer" style="max-height:70vh; overflow:auto; min-width:300px; min-height:100px;">
-                <div id="previewSpinner" data-uk-spinner></div>
-                <img id="previewImage" src="" style="max-width:100%; display:none;" alt="Cut path preview">
-                <p id="previewError" class="uk-text-danger uk-margin-small" style="display:none;"></p>
+            <div class="uk-modal-body">
+              <div id="previewSpinner" class="uk-text-center uk-padding" data-uk-spinner></div>
+              <p id="previewError" class="uk-alert-danger" style="display:none;"></p>
+              <div id="cutWorkspace" class="cut-workspace" style="display:none;">
+                <aside class="cut-workspace-controls">
+                  <form id="workspaceData" class="uk-form-stacked">
+                    <input id="workspaceFile" name="file" type="hidden">
+                    <div class="uk-grid-small" uk-grid>
+                      <div class="uk-width-1-2">
+                        <label class="uk-form-label" for="workspaceWidth">Width (mm)</label>
+                        <input id="workspaceWidth" class="uk-input uk-form-small workspace-transform" name="target_width_mm" type="number" min="0.1" step="0.1">
+                      </div>
+                      <div class="uk-width-1-2">
+                        <label class="uk-form-label" for="workspaceHeight">Height (mm)</label>
+                        <input id="workspaceHeight" class="uk-input uk-form-small workspace-transform" name="target_height_mm" type="number" min="0.1" step="0.1">
+                      </div>
+                      <div class="uk-width-1-1">
+                        <label class="uk-form-label" for="workspaceRollWidth">Loaded roll width (mm)</label>
+                        <input id="workspaceRollWidth" class="uk-input uk-form-small workspace-transform" name="roll_width_mm" type="number" min="0.1" max="1200" step="0.1">
+                      </div>
+                      <div class="uk-width-1-2">
+                        <label class="uk-form-label" for="workspaceOffsetX">X position</label>
+                        <input id="workspaceOffsetX" class="uk-input uk-form-small workspace-transform" name="offset_x_mm" type="number" min="0" step="0.1" value="0">
+                      </div>
+                      <div class="uk-width-1-2">
+                        <label class="uk-form-label" for="workspaceOffsetY">Y position</label>
+                        <input id="workspaceOffsetY" class="uk-input uk-form-small workspace-transform" name="offset_y_mm" type="number" min="0" step="0.1" value="0">
+                      </div>
+                      <div class="uk-width-1-1">
+                        <label class="uk-form-label" for="workspaceRotation">Rotation</label>
+                        <select id="workspaceRotation" class="uk-select uk-form-small workspace-transform" name="rotation">
+                          <option value="0">0°</option><option value="90">90°</option>
+                          <option value="180">180°</option><option value="270">270°</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="uk-margin-small-top uk-grid-small uk-child-width-1-2" uk-grid>
+                      <label><input id="workspaceMirrorX" class="uk-checkbox workspace-transform" name="mirror_x" type="checkbox"> Mirror X</label>
+                      <label><input id="workspaceMirrorY" class="uk-checkbox workspace-transform" name="mirror_y" type="checkbox"> Mirror Y</label>
+                      <label><input id="workspaceTravels" class="uk-checkbox" type="checkbox"> Travel paths</label>
+                      <label><input id="workspaceOrder" class="uk-checkbox" type="checkbox"> Path order</label>
+                    </div>
+                  </form>
+                  <p id="workspaceReadOnly" class="uk-alert-primary uk-text-small" style="display:none;">HPGL preview is exact and read-only.</p>
+                  <p id="previewInfo" class="uk-text-small uk-margin-small-top"></p>
+                  <p id="previewWarning" class="uk-text-warning uk-text-small" style="display:none;"></p>
+                  <p id="workspaceBoundsError" class="uk-alert-danger uk-text-small" style="display:none;"></p>
+                  <div class="uk-button-group uk-width-1-1 uk-margin-small-top">
+                    <button id="workspaceFitDesign" class="uk-button uk-button-default uk-button-small uk-width-1-3" type="button">Fit cut</button>
+                    <button id="workspaceFitRoll" class="uk-button uk-button-default uk-button-small uk-width-1-3" type="button">Fit roll</button>
+                    <button id="workspaceResetView" class="uk-button uk-button-default uk-button-small uk-width-1-3" type="button">Reset</button>
+                  </div>
+                  <button id="workspaceGenerate" class="uk-button uk-button-primary uk-width-1-1 uk-margin-small-top lock-edit" type="button">Generate HPGL</button>
+                </aside>
+                <section class="cut-workspace-stage">
+                  <svg id="workspaceSvg" xmlns="http://www.w3.org/2000/svg" aria-label="Interactive cutter path preview">
+                    <defs><pattern id="workspaceGrid" patternUnits="userSpaceOnUse"><path id="workspaceGridPath" fill="none"/></pattern></defs>
+                    <rect id="workspaceRoll" x="0" y="0" fill="url(#workspaceGrid)"/>
+                    <g id="workspaceRulers"></g>
+                    <g id="workspaceTravelsLayer"></g>
+                    <g id="workspaceCutsLayer"></g>
+                    <g id="workspaceMarkersLayer"></g>
+                  </svg>
+                  <div class="workspace-view-hint">Wheel to zoom • drag background to pan • drag the cut to position</div>
+                  <div class="workspace-simulation">
+                    <button id="workspacePlay" class="uk-button uk-button-primary uk-button-small" type="button">Play</button>
+                    <button id="workspacePause" class="uk-button uk-button-default uk-button-small" type="button">Pause</button>
+                    <button id="workspaceRestart" class="uk-button uk-button-default uk-button-small" type="button">Restart</button>
+                    <input id="workspaceProgress" class="uk-range" type="range" min="0" max="1000" value="1000">
+                    <output id="workspaceProgressLabel" for="workspaceProgress">100%</output>
+                    <select id="workspaceSpeed" class="uk-select uk-form-small">
+                      <option value="0.5">0.5×</option><option value="1" selected>1×</option>
+                      <option value="2">2×</option><option value="5">5×</option>
+                    </select>
+                  </div>
+                </section>
               </div>
             </div>
           </div>
@@ -355,33 +439,25 @@
                       </div>
                     </div>
 
-                    <div class="uk-width-1-3@s">
-                      <label class="uk-form-label" for="form-stacked-text">Page Size</label>
+                    <div class="uk-width-1-2@s">
+                      <label class="uk-form-label" for="targetWidthMm">Width (mm)</label>
                       <div class="uk-margin-small">
-                          <select input="pagesize" class="uk-select" name="pagesize">
-                              <option value="a4">ISO A4</option>
-                              <option value="a3">ISO A3</option>
-                          </select>
+                        <input id="targetWidthMm" class="uk-input" name="target_width_mm"
+                               type="number" min="0.1" max="1200" step="0.1" inputmode="decimal">
                       </div>
                     </div>
-                    <div class="uk-width-1-3@s">
-                      <label class="uk-form-label" for="form-stacked-text">SVG Scale</label>
+                    <div class="uk-width-1-2@s">
+                      <label class="uk-form-label" for="targetHeightMm">Height (mm)</label>
                       <div class="uk-margin-small">
-                          <select input="svgscale" class="uk-select" name="svgscale">
-                              <option value="none">None</option>
-                              <option value="a4">A4</option>
-                              <option value="a3">A3</option>
-                          </select>
+                        <input id="targetHeightMm" class="uk-input" name="target_height_mm"
+                               type="number" min="0.1" max="20000" step="0.1" inputmode="decimal">
                       </div>
                     </div>
-                    <div class="uk-width-1-3@s">
-                      <label class="uk-form-label" for="form-stacked-text">Page Orientation</label>
-                      <div class="uk-margin-small">
-                          <select input="pageorientation" class="uk-select" name="pageorientation">
-                              <option value="portrait">Portrait</option>
-                              <option value="landscape">Landscape</option>
-                          </select>
-                      </div>
+                    <div class="uk-width-1-1@s">
+                      <p id="conversionSizeInfo" class="uk-text-meta uk-margin-remove">
+                        Reading SVG dimensions…
+                      </p>
+                      <p id="conversionSizeError" class="uk-text-danger uk-margin-small-top" style="display:none;"></p>
                     </div>
 
                   </fieldset>
@@ -567,6 +643,14 @@
             renderJobHistory(msg.jobs);
           });
 
+          socket.on('connection_reset', function(msg) {
+            jQuery('#connectionResetStatus').text(msg.message || '');
+          });
+
+          socket.on('plot_cancelled', function(msg) {
+            notify('Transmission stopped; buffered cutter motion may continue.', 'danger');
+          });
+
           // Populate list on first start
           updateFiles();
           updatePorts();
@@ -636,7 +720,7 @@
           // Handle list element conversion from SVG 2 HPGL
           jQuery('body').on('click', '.convertFile', function(e) {
             e.preventDefault();
-            convertFileModal(jQuery(this));
+            previewFile(jQuery(this).data('filename'));
           });
 
           // Handle cut-path preview
@@ -663,9 +747,14 @@
           });
 
           // Stop Plot
-          jQuery(".stopPlot").click(function(e) {
+          jQuery('body').on('click', '.stopPlot', function(e) {
             e.preventDefault();
             stopPlot();
+          });
+
+          jQuery('#resetConnectionButton').click(function(e) {
+            e.preventDefault();
+            resetPlotterConnection();
           });
 
 

@@ -135,6 +135,16 @@ def listComPorts(extra_port=None):
 
 
 def _send_creation_1200(socketio, hpglfile, port, cancel_check=None):
+    """Own the shared serial-operation lock for a complete PCut transfer."""
+    globals.serial_port_closed.clear()
+    try:
+        with globals.serial_operation_lock:
+            return _send_creation_1200_unlocked(socketio, hpglfile, port, cancel_check)
+    finally:
+        globals.serial_port_closed.set()
+
+
+def _send_creation_1200_unlocked(socketio, hpglfile, port, cancel_check=None):
     """Stream an HPGL file to a Creation PCut CT-1200 vinyl cutter.
 
     Serial profile (verified against Inkcut's Creation 1200 driver):
@@ -173,6 +183,9 @@ def _send_creation_1200(socketio, hpglfile, port, cancel_check=None):
 
     socketio.emit('status_log', {'data': f'Opened {port} at 9600 8N1 RTS/CTS'})
 
+    with globals.active_serial_lock:
+        globals.active_serial = tty
+
     total_bytes_written = 0
     hpgl = None
     try:
@@ -203,6 +216,9 @@ def _send_creation_1200(socketio, hpglfile, port, cancel_check=None):
         return False  # loop exited because globals.printing was cleared (cancel)
 
     finally:
+        with globals.active_serial_lock:
+            if globals.active_serial is tty:
+                globals.active_serial = None
         if hpgl is not None:
             try:
                 hpgl.close()

@@ -319,3 +319,113 @@ footer {
   color: #fff;
   font-family: "Lucida Console", Monaco, monospace;
 }
+
+/* Interactive millimetre cutter workspace */
+.cut-workspace-dialog {
+  width: 96vw;
+  max-width: 1500px;
+}
+.cut-workspace {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 16px;
+  height: min(78vh, 850px);
+}
+.cut-workspace-controls {
+  overflow-y: auto;
+  padding-right: 5px;
+}
+.cut-workspace-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 420px;
+  border: 1px solid #56616b;
+  background: #18212a;
+}
+#workspaceSvg {
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+#workspaceSvg.dragging { cursor: grabbing; }
+#workspaceCutsLayer { cursor: move; }
+#workspaceCutsLayer path {
+  fill: none;
+  stroke: #e11d48;
+  stroke-width: 0.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+#workspaceCutsLayer.out-of-bounds path { stroke: #ff2d2d; stroke-width: 1.2; }
+#workspaceTravelsLayer path {
+  fill: none;
+  stroke: #1e87f0;
+  stroke-width: 0.45;
+  stroke-dasharray: 3 2;
+  opacity: 0.8;
+  vector-effect: non-scaling-stroke;
+}
+#workspaceMarkersLayer circle { vector-effect: non-scaling-stroke; }
+#workspaceMarkersLayer text, #workspaceRulers text {
+  font-family: monospace;
+  font-size: 8px;
+  pointer-events: none;
+}
+.workspace-view-hint {
+  position: absolute;
+  top: 7px;
+  right: 9px;
+  padding: 3px 6px;
+  color: #d8e1e8;
+  background: rgba(15, 23, 32, 0.78);
+  font-size: 11px;
+  pointer-events: none;
+}
+.workspace-simulation {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(100px, 1fr) 48px 75px;
+  gap: 6px;
+  align-items: center;
+  padding: 8px;
+  background: #26323d;
+}
+.cut-workspace .uk-button-default,
+.cut-workspace .uk-button-default:hover,
+.cut-workspace .uk-button-default:focus,
+.cut-workspace .uk-button-default:active {
+  color: #fff;
+  background: #3b4650;
+  border-color: #83909b;
+}
+.cut-workspace .uk-button-default:disabled {
+  color: #b8c0c7;
+  background: #303941;
+  border-color: #66717a;
+}
+.cut-workspace .uk-button-primary,
+.cut-workspace .uk-button-primary:hover,
+.cut-workspace .uk-button-primary:focus {
+  color: #fff;
+}
+#workspaceProgressLabel {
+  color: #fff;
+  font: 12px/1 monospace;
+  text-align: right;
+}
+.cut-safety-controls .uk-button-danger {
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+@media (max-width: 800px) {
+  .cut-workspace { grid-template-columns: 1fr; height: auto; }
+  .cut-workspace-controls { max-height: 36vh; }
+  .cut-workspace-stage { height: 52vh; min-height: 330px; }
+  .workspace-simulation { grid-template-columns: auto auto auto 1fr auto; }
+  #workspaceSpeed { grid-column: 1 / -1; }
+}
