@@ -515,7 +515,7 @@ var previewRequestId = 0;
 var cutterWorkspace = {
   payload: null, filename: '', view: null, metadata: null,
   animationFrame: null, animationProgress: 1, animationElements: [],
-  pointer: null, syncingDimensions: false
+  renderedPaths: [], renderedTravels: [], pointer: null, syncingDimensions: false
 };
 
 function workspaceNumber(selector, fallback) {
@@ -641,6 +641,8 @@ function workspaceRender(resetView) {
   jQuery('#workspaceRoll').attr({ width: rollWidth, height: rollLength });
   var cuts = '', travels = '', markers = '';
   var travelPaths = workspaceTravelPaths(paths);
+  cutterWorkspace.renderedPaths = paths;
+  cutterWorkspace.renderedTravels = travelPaths;
   paths.forEach(function(path, index) {
     cuts += '<path class="workspace-cut-path" data-sequence="' + index + '" d="' + workspacePathD(path) + '"/>';
     if (travelPaths[index]) travels += '<path class="workspace-travel-path" data-sequence="' + index + '" d="' + workspacePathD(travelPaths[index]) + '"/>';
@@ -670,44 +672,97 @@ function workspacePrepareSimulation(progress) {
   var cuts = jQuery('#workspaceCutsLayer path').toArray();
   var travels = jQuery('#workspaceTravelsLayer path').toArray();
   for (var i = 0; i < cuts.length; i++) {
-    if (jQuery('#workspaceTravels').is(':checked')) {
-      var travel = travels.find(function(item) { return parseInt(item.dataset.sequence, 10) === i; });
-      if (travel) cutterWorkspace.animationElements.push(travel);
+    var travel = travels.find(function(item) { return parseInt(item.dataset.sequence, 10) === i; });
+    if (travel && cutterWorkspace.renderedTravels[i]) {
+      cutterWorkspace.animationElements.push({
+        element: travel, points: cutterWorkspace.renderedTravels[i], kind: 'travel'
+      });
     }
-    cutterWorkspace.animationElements.push(cuts[i]);
+    cutterWorkspace.animationElements.push({
+      element: cuts[i], points: cutterWorkspace.renderedPaths[i], kind: 'cut'
+    });
   }
+  cutterWorkspace.animationElements.forEach(function(item) {
+    item.fullD = workspacePathD(item.points);
+    item.length = workspacePolylineLength(item.points);
+    item.state = null;
+  });
   workspaceSimulationProgress(progress == null ? 1 : progress);
+}
+
+function workspacePolylineLength(points) {
+  var length = 0;
+  for (var i = 1; i < points.length; i++) {
+    length += Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
+  }
+  return length;
+}
+
+function workspaceTruncatedPath(points, distance) {
+  if (!points.length) return { d: '', point: null };
+  var output = [[points[0][0], points[0][1]]];
+  var remaining = Math.max(0, distance);
+  for (var i = 1; i < points.length; i++) {
+    var start = points[i - 1], end = points[i];
+    var segment = Math.hypot(end[0] - start[0], end[1] - start[1]);
+    if (segment <= 0.000001) continue;
+    if (remaining >= segment) {
+      output.push([end[0], end[1]]);
+      remaining -= segment;
+    } else {
+      var ratio = remaining / segment;
+      output.push([
+        start[0] + (end[0] - start[0]) * ratio,
+        start[1] + (end[1] - start[1]) * ratio
+      ]);
+      break;
+    }
+  }
+  return { d: workspacePathD(output), point: output[output.length - 1] };
 }
 
 function workspaceSimulationProgress(progress) {
   progress = Math.max(0, Math.min(1, progress));
   cutterWorkspace.animationProgress = progress;
-  var lengths = cutterWorkspace.animationElements.map(function(element) { return element.getTotalLength(); });
-  var total = lengths.reduce(function(sum, length) { return sum + length; }, 0);
+  var total = cutterWorkspace.animationElements.reduce(function(sum, item) { return sum + item.length; }, 0);
   var reveal = total * progress;
-  cutterWorkspace.animationElements.forEach(function(element, index) {
-    var length = lengths[index], shown = Math.max(0, Math.min(length, reveal));
-    // Explicitly hiding untouched paths avoids browser-specific SVG dash
-    // rendering which previously left complete later paths visible near 0%.
+  var head = cutterWorkspace.animationElements.length ? cutterWorkspace.animationElements[0].points[0] : null;
+  var headKind = 'travel';
+  cutterWorkspace.animationElements.forEach(function(item) {
+    var element = item.element;
+    var length = item.length;
+    var shown = Math.max(0, Math.min(length, reveal));
+    element.style.strokeDasharray = 'none';
+    element.style.strokeDashoffset = '0';
     if (shown <= 0.0001) {
-      element.style.display = 'none';
-      element.style.strokeDasharray = 'none';
-      element.style.strokeDashoffset = '0';
+      if (item.state !== 'future') element.style.display = 'none';
+      item.state = 'future';
     } else if (shown >= length - 0.0001) {
-      // A completed path must be a normal solid line. Keeping a normalized
-      // dash pattern here caused Chrome to leave gaps in the final preview.
-      element.style.display = '';
-      element.style.strokeDasharray = 'none';
-      element.style.strokeDashoffset = '0';
+      if (item.state !== 'complete') {
+        element.style.display = '';
+        element.setAttribute('d', item.fullD);
+      }
+      item.state = 'complete';
+      head = item.points[item.points.length - 1];
+      headKind = item.kind;
     } else {
+      // Build only the travelled portion of the active polyline. Unlike SVG
+      // dash animation this cannot create several apparent cutter heads.
+      var partial = workspaceTruncatedPath(item.points, shown);
       element.style.display = '';
-      element.style.strokeDasharray = length + ' ' + length;
-      element.style.strokeDashoffset = String(length - shown);
+      element.setAttribute('d', partial.d);
+      item.state = 'active';
+      head = partial.point;
+      headKind = item.kind;
     }
-    element.removeAttribute('pathLength');
     reveal -= shown;
   });
   jQuery('#workspaceMarkersLayer').toggle(progress >= 0.9999);
+  if (head && progress < 0.9999) {
+    jQuery('#workspaceToolHead').attr({ cx: head[0], cy: head[1], fill: headKind === 'cut' ? '#f59e0b' : '#38bdf8' }).show();
+  } else {
+    jQuery('#workspaceToolHead').hide();
+  }
   jQuery('#workspaceProgress').val(Math.round(progress * 1000));
   jQuery('#workspaceProgressLabel').text(Math.round(progress * 100) + '%');
 }

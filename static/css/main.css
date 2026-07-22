@@ -372,6 +372,7 @@ footer {
   vector-effect: non-scaling-stroke;
 }
 #workspaceMarkersLayer circle { vector-effect: non-scaling-stroke; }
+#workspaceToolHead { vector-effect: non-scaling-stroke; pointer-events: none; }
 #workspaceMarkersLayer text, #workspaceRulers text {
   font-family: monospace;
   font-size: 8px;
