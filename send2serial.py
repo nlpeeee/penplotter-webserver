@@ -34,6 +34,11 @@ ERRORS = {
     16: 'input buffer has overflowed'
 }
 
+# Chunk size used when streaming to the Creation PCut CT-1200 vinyl cutter.
+# The cutter buffers commands internally; 256 bytes keeps latency manageable
+# while leaving room for RTS/CTS to stall the sender when needed.
+_CREATION_CHUNK_SIZE = 256
+
 class HPGLError(Exception):
     def __init__(self, n, cause=None):
         self.errcode = n
@@ -113,18 +118,118 @@ def baud_rate_test(serial_port, packet = b'IN;OI;'):
                 return baudrate
     return 'Unknown'
 
-def listComPorts():
+def listComPorts(extra_port=None):
+    """Return a dict with key *content* listing available serial ports.
+
+    *extra_port* — if supplied and not already in the detected list (e.g. a
+    stable ``/dev/serial/by-id/...`` symlink configured on a Raspberry Pi) it
+    is prepended so the UI can always select it even before it is enumerated by
+    the OS.
+    """
     ports = dict(name='ports', content=[])
     for i in serial.tools.list_ports.comports():
         ports['content'].append(str(i).split(" ")[0])
+    if extra_port and extra_port not in ports['content']:
+        ports['content'].insert(0, extra_port)
     return ports
 
-def sendToPlotter(socketio, hpglfile, port = 'COM3', baud = 9600, plotter = '7475a'):
+
+def _send_creation_1200(socketio, hpglfile, port, cancel_check=None):
+    """Stream an HPGL file to a Creation PCut CT-1200 vinyl cutter.
+
+    Serial profile (verified against Inkcut's Creation 1200 driver):
+      9600 baud · 8 data bits · no parity · 1 stop bit · RTS/CTS flow control
+
+    IMPORTANT: No HP-specific ESC status/error/buffer/abort/init commands are
+    ever emitted here.  Only the raw HPGL payload is sent, in bounded chunks,
+    with the cancellation flag checked between each chunk.
+
+    Returns True on normal completion (EOF), False on error or cancellation.
+    """
+    input_bytes = None
+    try:
+        ss = os.stat(hpglfile)
+        if ss.st_size != 0:
+            input_bytes = ss.st_size
+    except Exception as e:
+        socketio.emit('error', {'data': 'Error stat\'ing file: ' + str(e)})
+        return False
+
+    try:
+        tty = serial.Serial(
+            port=port,
+            baudrate=9600,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+            rtscts=True,
+            timeout=10.0,
+            write_timeout=30.0,
+        )
+    except SerialException as e:
+        socketio.emit('error', {'data': repr(e)})
+        print(repr(e))
+        return False
+
+    socketio.emit('status_log', {'data': f'Opened {port} at 9600 8N1 RTS/CTS'})
+
+    total_bytes_written = 0
+    hpgl = None
+    try:
+        hpgl = open(hpglfile, 'rb')
+
+        while globals.printing and not (cancel_check and cancel_check()):
+            data = hpgl.read(_CREATION_CHUNK_SIZE)
+            if not data:
+                print('*** EOF reached, exiting.')
+                notification.telegram_sendNotification('*** EOF reached, exiting.')
+                socketio.emit('status_log', {'data': '*** EOF reached, exiting.'})
+                return True
+
+            try:
+                tty.write(data)
+            except SerialException as e:
+                socketio.emit('error', {'data': 'Serial write error: ' + repr(e)})
+                print(repr(e))
+                return False
+
+            total_bytes_written += len(data)
+            if input_bytes:
+                percent = 100.0 * total_bytes_written / input_bytes
+                print(f'{percent:.2f}%, {total_bytes_written} bytes written.')
+                socketio.emit('status_log', {'data': f'{percent:.2f}%, {total_bytes_written} bytes written.'})
+                socketio.emit('print_progress', {'data': f'{percent:.2f}'})
+
+        return False  # loop exited because globals.printing was cleared (cancel)
+
+    finally:
+        if hpgl is not None:
+            try:
+                hpgl.close()
+            except Exception:
+                pass
+        try:
+            tty.close()
+        except Exception:
+            pass
+
+
+def sendToPlotter(socketio, hpglfile, port = 'COM3', baud = 9600, plotter = '7475a',
+                  cancel_check=None):
     print(plotter)
 
     globals.printing = True
     input_bytes = None
 
+    # ------------------------------------------------------------------ #
+    # Creation PCut CT-1200 — payload-only path (no HP ESC commands)      #
+    # ------------------------------------------------------------------ #
+    if plotter == 'creation_1200':
+        return _send_creation_1200(socketio, hpglfile, port, cancel_check)
+
+    # ------------------------------------------------------------------ #
+    # Shared file-stat for HP / Graphtec paths                            #
+    # ------------------------------------------------------------------ #
     try:
         ss = os.stat(hpglfile)
         if ss.st_size != 0:
@@ -174,7 +279,7 @@ def sendToPlotter(socketio, hpglfile, port = 'COM3', baud = 9600, plotter = '747
         socketio.emit('error', {'data': str(e)})
 
         # sys.exit(1)
-        return
+        return False
 
     print('Buffer size of plotter is', bufsz, 'bytes.')
     socketio.emit('status_log', {'data': 'Buffer size of plotter is ' + str(bufsz) + ' bytes.'})
@@ -202,7 +307,7 @@ def sendToPlotter(socketio, hpglfile, port = 'COM3', baud = 9600, plotter = '747
             print('*** EOF reached, exiting.')
             notification.telegram_sendNotification('*** EOF reached, exiting.')
             socketio.emit('status_log', {'data': '*** EOF reached, exiting.'})
-            break
+            return True
 
         if input_bytes != None:
             percent = 100.0 * total_bytes_written/input_bytes
@@ -211,8 +316,11 @@ def sendToPlotter(socketio, hpglfile, port = 'COM3', baud = 9600, plotter = '747
             socketio.emit('print_progress', {'data': f'{percent:.2f}'})
 
         else:
-            print(f'{percent:.2f}%, {bufsz_read} byte added.')
-            socketio.emit('status_log', {'data': f'{percent:.2f}%, {bufsz_read} byte added.'})
+            print(f'{bufsz_read} byte added.')
+            socketio.emit('status_log', {'data': f'{bufsz_read} byte added.'})
 
         tty.write(data)
         total_bytes_written += bufsz_read
+
+    return False  # cancelled
+

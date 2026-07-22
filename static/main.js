@@ -9,6 +9,9 @@ function updatePorts() {
         for (var content of response.data.content) {
           jQuery('.portList').append(`<option value="${content}">${content}</option>`)
         }
+        // Re-apply configured port selection (may have been cleared by repopulate)
+        var savedPort = jQuery('#portList').data('configured-port');
+        if (savedPort) jQuery('#portList').val(savedPort);
       }
     })
     .catch(function(error) {
@@ -132,7 +135,7 @@ function clearLog() {
   jQuery('#statusLog').html('');
 }
 
-// Start plotting
+// Start plotting — enqueues a job; the worker processes it asynchronously
 function startPlot() {
   const plotterData = jQuery('#plotterData').serializeArray()
   console.log('plotterData', plotterData);
@@ -142,8 +145,11 @@ function startPlot() {
     notify('No *.hpgl file selected', 'danger');
     return false
   }
-  if (jQuery('#portList').val() == null) {
-    notify('No COM port selected', 'danger');
+
+  // Determine effective port value
+  var useCustom = jQuery('#useCustomPort').is(':checked');
+  if (!useCustom && jQuery('#portList').val() == null) {
+    notify('No serial port selected', 'danger');
     updatePorts()
     return false
   }
@@ -153,6 +159,7 @@ function startPlot() {
       // handle success
       if (response.status == 200) {
         console.log(response);
+        notify(response.data, 'success');
       }
     })
     .catch(function(error) {
@@ -243,7 +250,16 @@ function updateConfiguration() {
         jQuery('#tasmota_ip').val(response.data.tasmota_ip);
 
         jQuery('.plotter_name').html(response.data.plotter_name);
-        jQuery('.portList').val(response.data.plotter_port).change();
+
+        var configuredPort = response.data.plotter_port;
+        // Store for re-application after port-list refresh
+        jQuery('#portList').data('configured-port', configuredPort);
+        // Add the configured port to the list if not already present
+        if (configuredPort && jQuery('#portList option[value="' + configuredPort + '"]').length === 0) {
+          jQuery('#portList').prepend(`<option value="${configuredPort}">${configuredPort}</option>`);
+        }
+        jQuery('.portList').val(configuredPort).change();
+
         jQuery('#device').val(response.data.plotter_device).change();
         jQuery('#baudRate').val(response.data.plotter_baudrate).change();
       }
@@ -268,7 +284,7 @@ function actionOpenConfig() {
         jQuery('#tasmota_ip').val(response.data.tasmota_ip);
 
         jQuery('#plotter_name').val(response.data.plotter_name);
-        jQuery('#plotter_port').val(response.data.plotter_port).change();
+        jQuery('#plotter_port').val(response.data.plotter_port);
         jQuery('#plotter_device').val(response.data.plotter_device).change();
         jQuery('#plotter_baudrate').val(response.data.plotter_baudrate).change();
 
@@ -296,6 +312,70 @@ function saveConfig() {
     })
     .catch(function(error) {
       notify(error, 'danger')
+      console.error(error);
+    });
+}
+
+// ── Job queue / history ──────────────────────────────────────────────────────
+
+var _statusBadge = {
+  queued:       'uk-label',
+  transmitting: 'uk-label uk-label-warning',
+  completed:    'uk-label uk-label-success',
+  failed:       'uk-label uk-label-danger',
+  cancelled:    'uk-label uk-label-danger',
+};
+
+function renderJobHistory(jobs) {
+  var tbody = jQuery('#jobHistoryBody');
+  tbody.html('');
+  if (!jobs || jobs.length === 0) {
+    tbody.append('<tr><td colspan="7" class="uk-text-center uk-text-muted">No jobs yet</td></tr>');
+    return;
+  }
+  jobs.forEach(function(job) {
+    var badge = _statusBadge[job.status] || 'uk-label';
+    var fname = job.file ? job.file.split('/').pop() : '';
+    var action = '';
+    if (job.status === 'queued') {
+      action = `<a href="#" class="cancelJob uk-button uk-button-danger uk-button-small" data-job-id="${job.id}">Cancel</a>`;
+    } else if (job.status === 'transmitting') {
+      action = `<a href="#" class="uk-button uk-button-danger uk-button-small stopPlot">Stop</a>`;
+    }
+    tbody.append(`<tr>
+      <td>${job.id}</td>
+      <td>${$('<div/>').text(fname).html()}</td>
+      <td>${$('<div/>').text(job.device).html()}</td>
+      <td>${$('<div/>').text(job.port).html()}</td>
+      <td><span class="${badge}">${job.status}</span></td>
+      <td class="uk-text-small">${job.created_at || ''}</td>
+      <td>${action}</td>
+    </tr>`);
+  });
+}
+
+function refreshJobHistory() {
+  axios.get('/job_history')
+    .then(function(response) {
+      if (response.status == 200) {
+        renderJobHistory(response.data.jobs);
+      }
+    })
+    .catch(function(error) {
+      console.error(error);
+    });
+}
+
+function cancelJob(jobId) {
+  axios.post('/cancel_job', { job_id: jobId })
+    .then(function(response) {
+      if (response.status == 200) {
+        notify('Job ' + jobId + ' cancelled', 'warning');
+        refreshJobHistory();
+      }
+    })
+    .catch(function(error) {
+      notify(error, 'danger');
       console.error(error);
     });
 }
