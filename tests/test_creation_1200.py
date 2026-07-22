@@ -244,22 +244,22 @@ class TestJobQueue(unittest.TestCase):
         import jobqueue
         jid = jobqueue.enqueue_job('test.hpgl', '/dev/ttyFAKE', '9600', 'creation_1200')
         self.assertIsInstance(jid, int)
-        job = jobqueue.get_next_queued()
+        job = jobqueue.claim_next_queued()
         self.assertIsNotNone(job)
         self.assertEqual(job['id'], jid)
-        self.assertEqual(job['status'], 'queued')
+        self.assertEqual(job['status'], 'transmitting')
 
     def test_fifo_order(self):
         import jobqueue
         id1 = jobqueue.enqueue_job('a.hpgl', '/dev/p', '9600', 'creation_1200')
         id2 = jobqueue.enqueue_job('b.hpgl', '/dev/p', '9600', 'creation_1200')
-        job = jobqueue.get_next_queued()
+        job = jobqueue.claim_next_queued()
         self.assertEqual(job['id'], id1, 'Queue must be FIFO')
 
     def test_status_progression(self):
         import jobqueue
         jid = jobqueue.enqueue_job('x.hpgl', '/dev/p', '9600', 'creation_1200')
-        jobqueue.update_job_status(jid, 'transmitting')
+        jobqueue.claim_next_queued()
         jobqueue.update_job_status(jid, 'completed')
         jobs = jobqueue.get_recent_jobs(limit=1)
         self.assertEqual(jobs[0]['status'], 'completed')
@@ -269,7 +269,7 @@ class TestJobQueue(unittest.TestCase):
     def test_failed_stores_error(self):
         import jobqueue
         jid = jobqueue.enqueue_job('x.hpgl', '/dev/p', '9600', 'creation_1200')
-        jobqueue.update_job_status(jid, 'transmitting')
+        jobqueue.claim_next_queued()
         jobqueue.update_job_status(jid, 'failed', error='port busy')
         jobs = jobqueue.get_recent_jobs(limit=1)
         self.assertEqual(jobs[0]['status'], 'failed')
@@ -278,28 +278,45 @@ class TestJobQueue(unittest.TestCase):
     def test_cancel_queued_job(self):
         import jobqueue
         jid = jobqueue.enqueue_job('x.hpgl', '/dev/p', '9600', 'creation_1200')
-        changed = jobqueue.cancel_queued_job(jid)
+        changed = jobqueue.request_cancel(jid)
         self.assertTrue(changed)
         jobs = jobqueue.get_recent_jobs(limit=1)
         self.assertEqual(jobs[0]['status'], 'cancelled')
 
-    def test_cancel_transmitting_job_ignored(self):
-        """cancel_queued_job must not cancel a job already transmitting."""
+    def test_cancel_transmitting_job_is_requested(self):
+        """A transmitting job records cancellation without changing the next job."""
         import jobqueue
         jid = jobqueue.enqueue_job('x.hpgl', '/dev/p', '9600', 'creation_1200')
-        jobqueue.update_job_status(jid, 'transmitting')
-        changed = jobqueue.cancel_queued_job(jid)
-        self.assertFalse(changed)
+        jobqueue.claim_next_queued()
+        changed = jobqueue.request_cancel(jid)
+        self.assertTrue(changed)
         jobs = jobqueue.get_recent_jobs(limit=1)
         self.assertEqual(jobs[0]['status'], 'transmitting')
+        self.assertTrue(jobs[0]['cancel_requested'])
 
     def test_transmitting_job_not_returned_as_queued(self):
         """A job being processed must not be picked up by get_next_queued again."""
         import jobqueue
         jid = jobqueue.enqueue_job('x.hpgl', '/dev/p', '9600', 'creation_1200')
-        jobqueue.update_job_status(jid, 'transmitting')
-        job = jobqueue.get_next_queued()
+        jobqueue.claim_next_queued()
+        job = jobqueue.claim_next_queued()
         self.assertIsNone(job)
+
+    def test_cancelled_job_cannot_be_claimed(self):
+        import jobqueue
+        jid = jobqueue.enqueue_job('x.hpgl', '/dev/p', '9600', 'creation_1200')
+        self.assertTrue(jobqueue.request_cancel(jid))
+        self.assertIsNone(jobqueue.claim_next_queued())
+
+    def test_restart_fails_interrupted_job(self):
+        import jobqueue
+        jid = jobqueue.enqueue_job('x.hpgl', '/dev/p', '9600', 'creation_1200')
+        jobqueue.claim_next_queued()
+        jobqueue.init_db()
+        job = jobqueue.get_recent_jobs(limit=1)[0]
+        self.assertEqual(job['id'], jid)
+        self.assertEqual(job['status'], 'failed')
+        self.assertIn('restarted', job['error'])
 
     def test_queue_serialization_thread_safety(self):
         """Rapid concurrent enqueues from multiple threads must all be recorded."""

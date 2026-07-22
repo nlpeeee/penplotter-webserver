@@ -40,7 +40,6 @@ def _execute_job(job):
     job_id = job['id']
     fname = os.path.basename(job['file'])
 
-    jobqueue.update_job_status(job_id, 'transmitting')
     _emit_job_update()
     socketio.emit('status_log', {'data': f'[Job {job_id}] Transmitting: {fname}'})
     socketio.emit('lock_edit', {'data': 'on'})
@@ -51,14 +50,17 @@ def _execute_job(job):
 
     result = None
     error_msg = None
+    globals.active_job_id = job_id
     try:
-        result = send2serial.sendToPlotter(
-            socketio,
-            job['file'],
-            job['port'],
-            int(job['baudrate']),
-            job['device'],
-        )
+        if not jobqueue.is_cancel_requested(job_id):
+            result = send2serial.sendToPlotter(
+                socketio,
+                job['file'],
+                job['port'],
+                int(job['baudrate']),
+                job['device'],
+                lambda: jobqueue.is_cancel_requested(job_id),
+            )
     except Exception as e:
         error_msg = str(e)
         socketio.emit('error', {'data': f'[Job {job_id}] Exception: {error_msg}'})
@@ -67,7 +69,7 @@ def _execute_job(job):
     #   - globals.printing was cleared by /stop_plot → cancelled
     #   - result is True and printing still set → completed
     #   - otherwise → failed
-    if not globals.printing:
+    if jobqueue.is_cancel_requested(job_id) or not globals.printing:
         status = 'cancelled'
     elif result is True:
         status = 'completed'
@@ -75,6 +77,7 @@ def _execute_job(job):
         status = 'failed'
 
     globals.printing = False
+    globals.active_job_id = None
 
     jobqueue.update_job_status(job_id, status, error_msg)
     socketio.emit('status_log', {'data': f'[Job {job_id}] {status.capitalize()}.'})
@@ -94,7 +97,7 @@ def _job_worker():
 
         # Process all waiting jobs before going back to sleep.
         while True:
-            job = jobqueue.get_next_queued()
+            job = jobqueue.claim_next_queued()
             if not job:
                 break
             _execute_job(job)
@@ -262,17 +265,21 @@ def start_plot():
 @app.route('/stop_plot', methods=['GET', 'POST'])
 def stop_plot():
     if request.method == "GET":
+        if globals.active_job_id is not None:
+            jobqueue.request_cancel(globals.active_job_id)
         globals.printing = False
         return 'Plotter Stopped'
 
-# Cancel a queued (not-yet-started) job by id.
+# Cancel a queued job or stop future transmission for the active job.
 @app.route('/cancel_job', methods=['POST'])
 def cancel_job():
     data = request.get_json(silent=True) or {}
     job_id = data.get('job_id')
     if job_id is None:
         return 'Missing job_id', 400
-    changed = jobqueue.cancel_queued_job(int(job_id))
+    changed = jobqueue.request_cancel(int(job_id))
+    if changed and globals.active_job_id == int(job_id):
+        globals.printing = False
     _emit_job_update()
     return ('Cancelled' if changed else 'Not found or already running'), (200 if changed else 404)
 

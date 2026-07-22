@@ -134,7 +134,7 @@ def listComPorts(extra_port=None):
     return ports
 
 
-def _send_creation_1200(socketio, hpglfile, port):
+def _send_creation_1200(socketio, hpglfile, port, cancel_check=None):
     """Stream an HPGL file to a Creation PCut CT-1200 vinyl cutter.
 
     Serial profile (verified against Inkcut's Creation 1200 driver):
@@ -178,7 +178,7 @@ def _send_creation_1200(socketio, hpglfile, port):
     try:
         hpgl = open(hpglfile, 'rb')
 
-        while globals.printing:
+        while globals.printing and not (cancel_check and cancel_check()):
             data = hpgl.read(_CREATION_CHUNK_SIZE)
             if not data:
                 print('*** EOF reached, exiting.')
@@ -214,7 +214,8 @@ def _send_creation_1200(socketio, hpglfile, port):
             pass
 
 
-def sendToPlotter(socketio, hpglfile, port = 'COM3', baud = 9600, plotter = '7475a'):
+def sendToPlotter(socketio, hpglfile, port = 'COM3', baud = 9600, plotter = '7475a',
+                  cancel_check=None):
     print(plotter)
 
     globals.printing = True
@@ -224,7 +225,7 @@ def sendToPlotter(socketio, hpglfile, port = 'COM3', baud = 9600, plotter = '747
     # Creation PCut CT-1200 — payload-only path (no HP ESC commands)      #
     # ------------------------------------------------------------------ #
     if plotter == 'creation_1200':
-        return _send_creation_1200(socketio, hpglfile, port)
+        return _send_creation_1200(socketio, hpglfile, port, cancel_check)
 
     # ------------------------------------------------------------------ #
     # Shared file-stat for HP / Graphtec paths                            #
