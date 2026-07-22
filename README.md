@@ -1,10 +1,11 @@
 # WebPlot - A Web interface for Pen Plotters
 
-Python webservice to simplify working with pen plotters:
-- Supported plotters: Graphtec MP4200, HP7475a
-- Created for Raspberry Pi.
+Python webservice to simplify working with pen plotters and vinyl cutters:
+- Supported devices: **Creation PCut CT-1200**, Graphtec MP4200, HP 7475A
+- Created for Raspberry Pi on a local LAN — no authentication or reverse proxy needed.
 - Upload *.SVG and *.HPGL files.
 - Convert *.SVG into *.HPGL files using [vpype](https://github.com/abey79/vpype)
+- **Persistent job queue and history** — jobs enqueue, exactly one worker owns the serial port at a time.
 - Telegram notification on print end
 - Poweroff your plotter on print end using a Tasmota-enabled Sonoff controller
 
@@ -34,9 +35,96 @@ http://{{your Raspberry Pi address}}:5000
 ```
 
 Optional:
-Configure options in *config.ini* using the web interface to set:
+Configure options in *config.ini* (copy from *config.ini.sample*) using the web interface to set:
+- Serial port and device profile.
 - Tasmota device IP.
 - Telegram Chat ID for notifications.
+
+## Raspberry Pi — Creation PCut CT-1200 Setup
+
+### 1. Identify the stable serial port
+
+After plugging in the USB-to-serial adapter (typically FTDI-based), find the
+stable `by-id` symlink — this will not change between reboots:
+
+```bash
+ls -l /dev/serial/by-id/
+```
+
+Example output:
+```
+lrwxrwxrwx 1 root dialout ... usb-FTDI_FT232R_USB_UART_XXXXXXXX-if00-port0 -> ../../ttyUSB0
+```
+
+Use the full `by-id` path in `config.ini`:
+```ini
+port = /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_XXXXXXXX-if00-port0
+```
+
+Never hard-code `/dev/ttyUSB0` — that number can shift.
+
+### 2. Add the webplotter user to the dialout group
+
+```bash
+sudo usermod -aG dialout pi   # or whatever user runs webplotter
+```
+
+Log out and back in (or reboot) for the group change to take effect.
+
+### 3. Verified serial parameters (matches Inkcut's Creation 1200 profile)
+
+| Parameter | Value |
+|-----------|-------|
+| Baud rate | 9600 |
+| Data bits | 8 |
+| Parity    | None |
+| Stop bits | 1 |
+| Flow ctrl | Hardware RTS/CTS |
+
+Select **"Creation PCut CT-1200"** as the device in the UI or in `config.ini`:
+```ini
+device = creation_1200
+baudrate = 9600
+```
+
+The `creation_1200` profile sends **only** the raw HPGL payload — no
+HP-specific ESC initialisation, status, buffer, or abort commands are ever
+sent to the cutter.
+
+### ⚠️  WARNING — Do not run ser2net / RFC 2217 alongside WebPlot
+
+Running `ser2net` (or any RFC 2217 TCP serial redirector) against the same
+port while WebPlot is active **will corrupt the data stream** and may cause
+the cutter to behave erratically.  Ensure ser2net is stopped before starting
+WebPlot:
+
+```bash
+sudo systemctl stop ser2net
+sudo systemctl disable ser2net   # prevent it from starting on boot
+```
+
+## Job Queue
+
+Uploads or "Start Plot" requests are placed in a persistent SQLite queue
+(`jobs.db`).  Exactly one background worker owns the serial port at a time —
+concurrent writes are impossible.
+
+Job states visible in the **Job History** panel:
+- **queued** — waiting for the worker
+- **transmitting** — currently being sent to the cutter
+- **completed** — full file transmitted
+- **failed** — serial or file error (error message shown in status log)
+- **cancelled** — stopped before transmission began
+
+Clicking **Stop** on a transmitting job sets the cancellation flag; no further
+bytes are sent, but any commands already in the cutter's internal buffer will
+still execute.
+
+## Running Tests
+
+```bash
+pytest tests/test_creation_1200.py -v
+```
 
 ## ToDO
 
@@ -45,8 +133,9 @@ Configure options in *config.ini* using the web interface to set:
 - [x] Add defaults to configuration file
 - [x] Stop print via UI?
 - [x] List current printing filename
-
-- [ ] More plotter options?
+- [x] Creation PCut CT-1200 support
+- [x] Persistent job queue + history (SQLite)
+- [x] Stable /dev/serial/by-id port support
 
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.

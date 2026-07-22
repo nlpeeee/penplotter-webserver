@@ -172,7 +172,7 @@
                             <input id="fileName" name="file" type="hidden">
 
                             <div class="uk-width-1-2@s">
-                              <label class="uk-form-label" for="form-stacked-text">COM Port</label>
+                              <label class="uk-form-label" for="form-stacked-text">Serial Port</label>
                               <div class="uk-margin-small">
                                 <div class="uk-grid uk-grid-small">
                                   <div class="uk-width-expand">
@@ -183,6 +183,8 @@
                                     <a href="#" class="uk-icon-link mac-button updatePorts" title="Refresh Port List" data-uk-tooltip data-uk-icon="icon: refresh"></a>
                                   </div>
                                 </div>
+                                <input id="customPort" class="uk-input uk-margin-small-top" type="text" name="custom_port" placeholder="/dev/serial/by-id/... (custom path)" style="display:none;">
+                                <label class="uk-text-small"><input id="useCustomPort" type="checkbox" class="uk-checkbox"> Use custom port path</label>
                               </div>
                             </div>
                             <div class="uk-width-1-2@s">
@@ -203,6 +205,7 @@
                               <label class="uk-form-label" for="form-stacked-text">Plotting Device</label>
                               <div class="uk-margin-small">
                                   <select id="device" input="device" class="uk-select" name="device">
+                                      <option value="creation_1200">Creation PCut CT-1200</option>
                                       <option value="7475a">HP 7475A</option>
                                       <option value="mp4200">Graptech MP4200</option>
                                   </select>
@@ -241,6 +244,36 @@
               </div>
             </div>
             <!-- /Status -->
+
+            <!-- Job History -->
+            <div class="uk-width-1-1">
+              <div class="uk-card uk-card-default uk-card-small mac-card">
+                <div class="uk-card-header mac-browser-bar">
+                  <div class="uk-grid uk-grid-small">
+                    <div class="uk-width-auto"><h4>Job History</h4></div>
+                    <div class="uk-width-expand uk-text-right panel-icons">
+                      <a href="#" class="uk-icon-link mac-button mac-mix refreshJobs" title="Refresh" data-uk-tooltip data-uk-icon="icon: refresh"></a>
+                      <a href="#" class="uk-icon-link mac-button mac-min sortable-icon" title="Move" data-uk-tooltip data-uk-icon="icon: move"></a>
+                      <a href="#" class="uk-icon-link mac-button mac-close closeCard" data-card="jobHistory-card" title="Close" data-uk-tooltip data-uk-icon="icon: chevron-up"></a>
+                      <a href="#" class="uk-icon-link mac-button mac-max showCard uk-hidden" data-card="jobHistory-card" title="Open" data-uk-tooltip data-uk-icon="icon: chevron-down"></a>
+                    </div>
+                  </div>
+                </div>
+                <div id="jobHistory-card" class="uk-card-body">
+                  <div class="chart-container uk-panel uk-panel-scrollable">
+                    <table class="uk-table uk-table-small uk-table-divider uk-table-striped">
+                      <thead>
+                        <tr>
+                          <th>ID</th><th>File</th><th>Device</th><th>Port</th><th>Status</th><th>Created</th><th>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody id="jobHistoryBody"></tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <!-- /Job History -->
 
           </div>
           <footer class="uk-section uk-section-small uk-text-center">
@@ -395,14 +428,14 @@
                     <div class="uk-width-1-2@s">
                       <label class="uk-form-label" for="plotter_port">Plotter Default Port</label>
                       <div class="uk-margin-small">
-                          <select id="plotter_port" class="uk-select portList" name="plotter_port">
-                          </select>
+                          <input id="plotter_port" class="uk-input" name="plotter_port" type="text" placeholder="/dev/serial/by-id/... or COM3">
                       </div>
                     </div>
                     <div class="uk-width-1-2@s">
                       <label class="uk-form-label" for="plotter_device">Plotter Default Device</label>
                       <div class="uk-margin-small">
                           <select id="plotter_device" input="device" class="uk-select" name="plotter_device">
+                              <option value="creation_1200">Creation PCut CT-1200</option>
                               <option value="7475a">HP 7475A</option>
                               <option value="mp4200">Graptech MP4200</option>
                           </select>
@@ -507,12 +540,20 @@
             }
           });
 
+          // Receive live job-queue updates
+          socket.on('job_update', function(msg) {
+            renderJobHistory(msg.jobs);
+          });
+
           // Populate list on first start
           updateFiles();
           updatePorts();
 
           // Fetch configuration data
           updateConfiguration();
+
+          // Fetch initial job history
+          refreshJobHistory();
 
           // Create uploader
           const uploadFiles = new Dropzone("#uploadFiles");
@@ -530,6 +571,32 @@
           jQuery(".updatePorts").click(function(e) {
             e.preventDefault();
             updatePorts();
+          });
+
+          // Toggle custom port input
+          jQuery('#useCustomPort').change(function() {
+            if (jQuery(this).is(':checked')) {
+              jQuery('#customPort').show();
+              jQuery('#portList').attr('name', '_port_unused').prop('disabled', true);
+              jQuery('#customPort').attr('name', 'port');
+            } else {
+              jQuery('#customPort').hide();
+              jQuery('#portList').attr('name', 'port').prop('disabled', false);
+              jQuery('#customPort').attr('name', 'custom_port');
+            }
+          });
+
+          // Refresh job history
+          jQuery(".refreshJobs").click(function(e) {
+            e.preventDefault();
+            refreshJobHistory();
+          });
+
+          // Cancel queued job
+          jQuery('body').on('click', '.cancelJob', function(e) {
+            e.preventDefault();
+            var jobId = jQuery(this).data('job-id');
+            cancelJob(jobId);
           });
 
           // Handle List element selection

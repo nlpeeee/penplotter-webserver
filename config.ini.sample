@@ -7,7 +7,13 @@ tasmota_enable = false
 tasmota_ip = 192.168.1.107
 
 [plotter]
-name = HP 7475A
-port = COM1
-device = 7475a
+name = Creation PCut CT-1200
+; For a Raspberry Pi use the stable by-id symlink, e.g.:
+;   port = /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_XXXXXXXX-if00-port0
+; On Windows use COM3, COM4, etc.
+port = /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_XXXXXXXX-if00-port0
+; creation_1200 = Creation PCut CT-1200 (9600 8N1 RTS/CTS, payload-only)
+; 7475a         = HP 7475A
+; mp4200        = Graphtec MP4200
+device = creation_1200
 baudrate = 9600
