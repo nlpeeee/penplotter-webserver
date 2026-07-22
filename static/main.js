@@ -379,3 +379,24 @@ function cancelJob(jobId) {
       console.error(error);
     });
 }
+
+// Show cut-path preview in a modal (SVG served directly; HPGL converted via vpype)
+function previewFile(filename) {
+  jQuery('#previewModalTitle').text(filename);
+  jQuery('#previewImage').hide().attr('src', '');
+  jQuery('#previewError').hide().text('');
+  jQuery('#previewSpinner').show();
+  UIkit.modal('#modal-preview').show();
+
+  jQuery('#previewImage')
+    .off('load error')
+    .on('load', function() {
+      jQuery('#previewSpinner').hide();
+      jQuery(this).show();
+    })
+    .on('error', function() {
+      jQuery('#previewSpinner').hide();
+      jQuery('#previewError').text('Preview failed — file may be empty or conversion error.').show();
+    })
+    .attr('src', '/preview/' + encodeURIComponent(filename));
+}

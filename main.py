@@ -170,6 +170,36 @@ def convert(file, pagesize = 'a4', svgscale = 'a4', pageorientation = 'landscape
 def too_large(e):
     return "File is too large", 413
 
+@app.route('/preview/<filename>')
+def preview_file(filename):
+    """Return an SVG preview of the given upload. HPGL is converted via vpype."""
+    import tempfile
+    filename = secure_filename(filename)
+    filepath = os.path.join(app.config['UPLOAD_PATH'], filename)
+    if not os.path.exists(filepath):
+        abort(404)
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == '.svg':
+        return send_from_directory(app.config['UPLOAD_PATH'], filename, mimetype='image/svg+xml')
+    elif ext == '.hpgl':
+        with tempfile.NamedTemporaryFile(suffix='.svg', delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            result = subprocess.run(
+                ['vpype', 'read', filepath, 'write', '--device', 'svg', tmp_path],
+                capture_output=True, timeout=60
+            )
+            if result.returncode != 0:
+                abort(500)
+            with open(tmp_path, 'rb') as f:
+                svg_data = f.read()
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        return Response(svg_data, mimetype='image/svg+xml')
+    else:
+        abort(400)
+
 @app.route('/')
 def index():
     files = make_tree(app.config['UPLOAD_PATH'])

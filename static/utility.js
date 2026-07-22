@@ -15,6 +15,7 @@ function renderFileListElement(name) {
                   </a>
                 </div>
                 <div class="uk-width-auto uk-text-right panel-icons">
+                  <a href="#" class="uk-icon-link previewFile" data-filename="${name}" title="Preview Cut Path" data-uk-tooltip data-uk-icon="icon: eye"></a>
                   <a href="#" class="uk-icon-link deleteFile lock-edit" data-filename="${name}" title="Delete" data-uk-tooltip data-uk-icon="icon: close"></a>
                 </div>
               </div>`;
@@ -27,6 +28,7 @@ function renderFileListElement(name) {
                   </a>
                 </div>
                 <div class="uk-width-auto uk-text-right panel-icons">
+                  <a href="#" class="uk-icon-link previewFile" data-filename="${name}" title="Preview Cut Path" data-uk-tooltip data-uk-icon="icon: eye"></a>
                   <a href="#" class="uk-icon-link convertFile lock-edit" data-filename="${name}" title="Convert to HPGL" data-uk-tooltip data-uk-icon="icon: bolt"></a>
                   <a href="#" class="uk-icon-link deleteFile lock-edit" data-filename="${name}" title="Delete" data-uk-tooltip data-uk-icon="icon: close"></a>
                 </div>
