@@ -215,7 +215,13 @@ def index():
         'plotter_baudrate': config['plotter']['baudrate'],
     }
 
-    return render_template('index.html', files=files, configuration=configuration)
+    try:
+        version = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'],
+                                          stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        version = '1'
+
+    return render_template('index.html', files=files, configuration=configuration, version=version)
 
 # Upload
 @app.route('/', methods=['POST'])
