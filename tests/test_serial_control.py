@@ -22,6 +22,7 @@ class TestCancellation(unittest.TestCase):
         globals.active_serial = tty
         self.assertTrue(serial_control.cancel_active_write())
         tty.cancel_write.assert_called_once_with()
+        tty.reset_output_buffer.assert_called_once_with()
 
     def test_cancel_with_no_open_port_is_safe(self):
         self.assertFalse(serial_control.cancel_active_write())

@@ -9,6 +9,7 @@ import sqlite3
 import os
 import tempfile
 import uuid
+import json
 
 DB_PATH = os.environ.get('WEBPLOT_DB', 'jobs.db')
 SPOOL_PATH = os.environ.get('PCP_SPOOL_DIR', 'spool')
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at  TIMESTAMP,
     finished_at TIMESTAMP,
     error       TEXT,
+    transport_diagnostics TEXT,
     cancel_requested INTEGER NOT NULL DEFAULT 0
 );
 """
@@ -52,6 +54,9 @@ def init_db():
             "display_file": "ALTER TABLE jobs ADD COLUMN display_file TEXT",
             "project_id": "ALTER TABLE jobs ADD COLUMN project_id TEXT",
             "project_revision": "ALTER TABLE jobs ADD COLUMN project_revision INTEGER",
+            "transport_diagnostics": (
+                "ALTER TABLE jobs ADD COLUMN transport_diagnostics TEXT"
+            ),
         }
         for column, statement in migrations.items():
             if column not in columns:
@@ -148,7 +153,7 @@ def claim_next_queued():
             return None
         job = conn.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone()
         conn.commit()
-        return dict(job)
+        return _job_dict(job)
     finally:
         conn.close()
 
@@ -181,7 +186,38 @@ def get_recent_jobs(limit=20):
         rows = conn.execute(
             "SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [_job_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def _job_dict(row):
+    output = dict(row)
+    raw = output.get("transport_diagnostics")
+    if raw:
+        try:
+            output["transport_diagnostics"] = json.loads(raw)
+        except (TypeError, ValueError):
+            output["transport_diagnostics"] = None
+    else:
+        output["transport_diagnostics"] = None
+    return output
+
+
+def update_transport_diagnostics(job_id, diagnostics):
+    """Persist a bounded technical snapshot for one cutter transmission."""
+    payload = json.dumps(diagnostics or {}, sort_keys=True, separators=(",", ":"))
+    if len(payload) > 20_000:
+        payload = json.dumps({
+            "error": "Transport diagnostics exceeded the storage limit.",
+        })
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE jobs SET transport_diagnostics=? WHERE id=?",
+            (payload, job_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 

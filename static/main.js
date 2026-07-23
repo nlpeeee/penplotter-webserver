@@ -466,6 +466,23 @@ var _statusBadge = {
   cancelled:    'uk-label uk-label-danger',
 };
 
+function transportDiagnosticsHtml(diagnostics) {
+  if (!diagnostics) return '';
+  var mode = diagnostics.mode || 'unknown';
+  var duration = Number(diagnostics.duration_seconds || 0).toFixed(2);
+  var rate = Number(diagnostics.effective_bytes_per_second || 0).toFixed(1);
+  var cts = Number(diagnostics.cts_low_seconds || 0).toFixed(2);
+  return '<details class="job-transport-diagnostics"><summary>Transfer details</summary>' +
+    '<span>Mode: ' + workspaceEscape(mode) + '</span><br>' +
+    '<span>Bytes: ' + Number(diagnostics.bytes || 0) + '</span><br>' +
+    '<span>Duration: ' + duration + ' s</span><br>' +
+    '<span>Effective rate: ' + rate + ' B/s</span><br>' +
+    '<span>Partial writes: ' + Number(diagnostics.partial_writes || 0) + '</span><br>' +
+    '<span>CTS low: ' + cts + ' s</span><br>' +
+    '<span>Stalls: ' + Number(diagnostics.stall_count || 0) + '</span>' +
+    '</details>';
+}
+
 function renderJobHistory(jobs) {
   var tbody = jQuery('#jobHistoryBody');
   tbody.html('');
@@ -478,6 +495,7 @@ function renderJobHistory(jobs) {
   jobs.forEach(function(job) {
     var badge = _statusBadge[job.status] || 'uk-label';
     var fname = job.display_file || (job.file ? job.file.split('/').pop() : '');
+    var statusText = job.status === 'completed' ? 'Transfer complete' : job.status;
     var projectLink = job.project_id && job.project_revision
       ? '<br><button class="uk-button uk-button-text project-history-open" data-project-id="' +
         workspaceEscape(job.project_id) + '" data-revision="' + job.project_revision +
@@ -489,12 +507,13 @@ function renderJobHistory(jobs) {
     } else if (job.status === 'transmitting') {
       action = `<a href="#" class="uk-button uk-button-danger uk-button-small stopPlot">Stop</a>`;
     }
-    tbody.append(`<tr>
+    var diagnostics = transportDiagnosticsHtml(job.transport_diagnostics);
+    tbody.append(`<tr data-job-status="${workspaceEscape(job.status)}">
       <td>${job.id}</td>
-      <td>${$('<div/>').text(fname).html()}${projectLink}</td>
+      <td>${$('<div/>').text(fname).html()}${projectLink}${diagnostics}</td>
       <td>${$('<div/>').text(job.device).html()}</td>
       <td>${$('<div/>').text(job.port).html()}</td>
-      <td><span class="${badge}">${job.status}</span></td>
+      <td><span class="${badge}">${statusText}</span></td>
       <td class="uk-text-small">${job.created_at || ''}</td>
       <td>${action}</td>
     </tr>`);
@@ -607,8 +626,9 @@ function workspaceTransformedPaths() {
 function workspaceRequestData() {
   var selected = cutterWorkspace.manifestItems[cutterWorkspace.selectedItemIndex] || {};
   return {
-    manifest_version: 1,
+    manifest_version: 2,
     filename: cutterWorkspace.filename,
+    operator_speed_mm_s: workspaceNumber('#workspaceOperatorSpeed', 50),
     material_profile_id: cutterWorkspace.selectedProfileId || 'unprofiled',
     roll_width_mm: workspaceNumber('#workspaceRollWidth', 1200),
     items: cutterWorkspace.manifestItems.map(function(item) {
@@ -858,6 +878,7 @@ function workspaceApplySavedManifest(manifest) {
   jQuery('#workspaceMergeTolerance').val(preparation.merge_tolerance_mm == null ? 0.05 : preparation.merge_tolerance_mm);
   jQuery('#workspaceSimplify').prop('checked', !!preparation.simplify_enabled);
   jQuery('#workspaceSimplifyTolerance').val(preparation.simplify_tolerance_mm == null ? 0.05 : preparation.simplify_tolerance_mm);
+  jQuery('#workspaceOperatorSpeed').val(manifest.operator_speed_mm_s == null ? 50 : manifest.operator_speed_mm_s);
   var aids = manifest.cutting_aids || {};
   jQuery('#workspaceWeedEnabled').prop('checked', !!aids.weed_enabled);
   jQuery('#workspaceWeedBorderMode').val(aids.weed_border_mode || 'layout');
@@ -1241,12 +1262,22 @@ function workspaceStatsHtml(preview) {
   if (!preview || !preview.before || !preview.after) return '';
   var before = preview.before, after = preview.after;
   function length(value) { return Number(value || 0).toFixed(1) + ' mm'; }
+  var transport = preview.transport || {};
+  var transportHtml = transport.risk
+    ? '<br><strong>9600-baud throughput</strong><br>' +
+      'Wire: ' + Number(transport.estimated_wire_seconds || 0).toFixed(1) + ' s' +
+      ' • minimum motion: ' + Number(transport.minimum_motion_seconds || 0).toFixed(1) + ' s<br>' +
+      'Feed ratio: ' + Number(transport.wire_to_motion_ratio || 0).toFixed(2) +
+      ' • risk: <strong>' + workspaceEscape(transport.risk) + '</strong>'
+    : '';
   return '<strong>Preflight</strong><br>' +
     'Paths: ' + before.path_count + ' → ' + after.path_count + '<br>' +
     'Points: ' + before.point_count + ' → ' + after.point_count + '<br>' +
     'Cut: ' + length(before.cut_length_mm) + ' → ' + length(after.cut_length_mm) + '<br>' +
     'Travel: ' + length(before.travel_length_mm) + ' → ' + length(after.travel_length_mm) + '<br>' +
-    'HPGL: ' + before.hpgl_bytes + ' → ' + after.hpgl_bytes + ' bytes';
+    'HPGL: ' + before.hpgl_bytes + ' → ' + after.hpgl_bytes + ' bytes<br>' +
+    'Maximum simplification deviation: ' + Number(preview.maximum_deviation_mm || 0).toFixed(3) +
+    ' mm' + transportHtml;
 }
 
 function workspaceApplyServerPreview(preview, resetView) {
@@ -1994,8 +2025,10 @@ function previewFile(filename, options) {
       jQuery('#workspaceMirrorX, #workspaceMirrorY').prop('checked', false);
       jQuery('#workspaceTravels, #workspaceOrder').prop('checked', false);
       jQuery('#workspacePreparationEnabled, #workspaceRemoveDuplicates, #workspaceInsideFirst, #workspaceMinimizeTravel').prop('checked', true);
-      jQuery('#workspaceMerge, #workspaceSimplify, #workspaceShowOriginal').prop('checked', false);
+      jQuery('#workspaceMerge, #workspaceShowOriginal').prop('checked', false);
+      jQuery('#workspaceSimplify').prop('checked', true);
       jQuery('#workspaceMergeTolerance, #workspaceSimplifyTolerance').val('0.05');
+      jQuery('#workspaceOperatorSpeed').val('50');
       jQuery('#workspaceWeedEnabled, #workspaceWeedHorizontal, #workspaceWeedVertical, #workspaceOvercutEnabled, #workspaceBladeCompensation').prop('checked', false);
       jQuery('#workspaceShowIntended').prop('checked', true);
       jQuery('#workspaceWeedBorderMode').val('layout');

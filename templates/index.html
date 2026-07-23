@@ -444,8 +444,10 @@
                         <div class="uk-grid-small" uk-grid>
                           <label class="uk-width-2-3"><input id="workspaceMerge" class="uk-checkbox workspace-preparation" type="checkbox"> Merge nearby paths</label>
                           <input id="workspaceMergeTolerance" class="uk-input uk-form-small uk-width-1-3 workspace-preparation" type="number" min="0.001" max="1" step="0.001" value="0.05" aria-label="Merge tolerance in millimetres">
-                          <label class="uk-width-2-3"><input id="workspaceSimplify" class="uk-checkbox workspace-preparation" type="checkbox"> Simplify paths</label>
-                          <input id="workspaceSimplifyTolerance" class="uk-input uk-form-small uk-width-1-3 workspace-preparation" type="number" min="0.001" max="1" step="0.001" value="0.05" aria-label="Simplification tolerance in millimetres">
+                          <label class="uk-width-2-3"><input id="workspaceSimplify" class="uk-checkbox workspace-preparation" type="checkbox" checked> Simplify paths safely</label>
+                          <input id="workspaceSimplifyTolerance" class="uk-input uk-form-small uk-width-1-3 workspace-preparation" type="number" min="0.001" max="0.1" step="0.001" value="0.05" aria-label="Simplification tolerance in millimetres">
+                          <label class="uk-width-2-3" for="workspaceOperatorSpeed">Cutter speed check (mm/s)</label>
+                          <input id="workspaceOperatorSpeed" class="uk-input uk-form-small uk-width-1-3 workspace-preparation" type="number" min="1" max="600" step="1" value="50" aria-label="Cutter speed used for serial throughput check">
                         </div>
                         <label><input id="workspaceShowOriginal" class="uk-checkbox" type="checkbox"> Show original overlay</label>
                       </div>

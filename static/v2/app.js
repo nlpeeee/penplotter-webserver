@@ -588,7 +588,7 @@
 
   function filterJobs(filter) {
     jQuery('#jobHistoryBody tr').each(function () {
-      var status = jQuery(this).find('td').eq(4).text().trim();
+      var status = jQuery(this).attr('data-job-status') || '';
       jQuery(this).toggle(filter === 'all' || status === filter);
     });
   }
@@ -686,6 +686,14 @@
         uiState.active_job.progress = Number(message.data || 0);
         renderUiState(uiState);
       }
+    });
+    socket.on('plotter_phase', function (message) {
+      var phase = message.phase || 'transmitting';
+      jQuery('#v2SerialOperation').text(
+        phase === 'transferred' ? 'Transfer complete'
+          : phase.charAt(0).toUpperCase() + phase.slice(1)
+      );
+      announce(message.message || phase);
     });
     socket.on('job_update', function (message) {
       renderJobHistory(message.jobs || []);

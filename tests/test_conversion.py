@@ -182,11 +182,37 @@ class TestConversionEndpoint(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(response.status_code, 200)
         self.assertTrue(body['valid'])
-        self.assertEqual(body['manifest_version'], 1)
+        self.assertEqual(body['manifest_version'], 2)
         self.assertEqual(body['before']['path_count'], 2)
         self.assertEqual(body['after']['path_count'], 1)
         self.assertEqual(len(body['geometry_hash']), 64)
         self.assertEqual(body['cut_paths'], body['intended_paths'][:1])
+        self.assertEqual(body['transport']['baudrate'], 9600)
+        self.assertIn(body['transport']['risk'], {'low', 'caution', 'high'})
+
+    def test_v2_new_svg_defaults_to_safe_simplification_but_v1_remains_exact(self):
+        Path(self.directory.name, 'curve.svg').write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="50mm" '
+            'viewBox="0 0 100 50"><path d="M0 25 C25 0 75 50 100 25"/></svg>'
+        )
+        base = {
+            'filename': 'curve.svg',
+            'transform': {
+                'target_width_mm': 100, 'target_height_mm': 50,
+                'roll_width_mm': 200, 'offset_x_mm': 0, 'offset_y_mm': 0,
+                'rotation': 0,
+            },
+            'preparation': {},
+        }
+        legacy = self.client.post(
+            '/api/workspace/preview', json={**base, 'manifest_version': 1}
+        ).get_json()
+        current = self.client.post(
+            '/api/workspace/preview', json={**base, 'manifest_version': 2}
+        ).get_json()
+        self.assertEqual(legacy['maximum_deviation_mm'], 0)
+        self.assertEqual(current['maximum_deviation_mm'], 0.05)
+        self.assertLess(current['after']['point_count'], legacy['after']['point_count'])
 
     def test_workspace_generate_rejects_stale_geometry_hash(self):
         Path(self.directory.name, 'art.svg').write_text(SVG)

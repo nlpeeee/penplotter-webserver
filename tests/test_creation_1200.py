@@ -47,6 +47,10 @@ class TestCreation1200SerialSettings(unittest.TestCase):
     def setUp(self):
         globals.initialize()
         globals.printing = True  # sendToPlotter sets this; we pre-set it here
+        self.transport_patcher = patch.dict(
+            os.environ, {'PCP_PCUT_TRANSPORT': 'legacy'}
+        )
+        self.transport_patcher.start()
         self.sio = _make_socketio_mock()
         self.hpgl_path = _hpgl_file()
         self.sleep_patcher = patch('send2serial.time.sleep')
@@ -54,6 +58,7 @@ class TestCreation1200SerialSettings(unittest.TestCase):
 
     def tearDown(self):
         self.sleep_patcher.stop()
+        self.transport_patcher.stop()
         globals.printing = False
         if os.path.exists(self.hpgl_path):
             os.remove(self.hpgl_path)
@@ -265,6 +270,140 @@ class TestCreation1200SerialSettings(unittest.TestCase):
             mock_c.assert_not_called()
 
 
+class TestCreation1200BufferedTransport(unittest.TestCase):
+    """Verify continuous exact-byte streaming and cancellable backpressure."""
+
+    def setUp(self):
+        globals.initialize()
+        globals.printing = True
+        self.sio = _make_socketio_mock()
+        self.transport_patcher = patch.dict(
+            os.environ, {'PCP_PCUT_TRANSPORT': 'buffered'}
+        )
+        self.transport_patcher.start()
+        self.sleep_patcher = patch('send2serial.time.sleep')
+        self.sleep_patcher.start()
+
+    def tearDown(self):
+        self.sleep_patcher.stop()
+        self.transport_patcher.stop()
+        globals.printing = False
+
+    @staticmethod
+    def _tty(write_effect=None):
+        tty = MagicMock()
+        tty.write.side_effect = write_effect or (lambda data: len(data))
+        tty.out_waiting = 0
+        tty.cts = True
+        return tty
+
+    @patch('serial.Serial')
+    def test_exact_hpgl_is_preserved_without_coordinate_rewriting(self, serial_cls):
+        payload = b'IN;SP1;PA;PU0,0;PD10,10,20,20,30,30;PU;SP0;'
+        path = _hpgl_file(payload)
+        tty = self._tty()
+        serial_cls.return_value = tty
+        diagnostics = []
+        try:
+            import send2serial
+            result = send2serial._send_creation_1200(
+                self.sio, path, '/dev/ttyFAKE',
+                diagnostics_callback=diagnostics.append,
+            )
+        finally:
+            os.remove(path)
+
+        self.assertTrue(result)
+        self.assertEqual(b''.join(call.args[0] for call in tty.write.call_args_list), payload)
+        self.assertEqual(
+            [call.args[0] for call in tty.write.call_args_list].count(b'IN;'), 1
+        )
+        self.assertEqual(diagnostics[-1]['mode'], 'buffered')
+        self.assertEqual(diagnostics[-1]['bytes'], len(payload))
+        kwargs = serial_cls.call_args.kwargs
+        self.assertEqual(kwargs['write_timeout'], 0)
+        self.assertTrue(kwargs['rtscts'])
+        self.assertFalse(kwargs['xonxoff'])
+        self.assertTrue(kwargs['exclusive'])
+
+    @patch('serial.Serial')
+    def test_partial_and_zero_writes_resume_without_losing_bytes(self, serial_cls):
+        payload = b'IN;PU0,0;PD' + b'10,10,' * 80 + b';PU;'
+        path = _hpgl_file(payload)
+        calls = [0]
+
+        def partial(data):
+            calls[0] += 1
+            if calls[0] == 2:
+                return 0
+            return min(7, len(data))
+
+        tty = self._tty(partial)
+        serial_cls.return_value = tty
+        diagnostics = []
+        try:
+            import send2serial
+            result = send2serial._send_creation_1200(
+                self.sio, path, '/dev/ttyFAKE',
+                diagnostics_callback=diagnostics.append,
+            )
+        finally:
+            os.remove(path)
+
+        self.assertTrue(result)
+        self.assertGreater(diagnostics[-1]['partial_writes'], 0)
+        self.assertEqual(diagnostics[-1]['stall_count'], 1)
+        self.assertEqual(diagnostics[-1]['bytes'], len(payload))
+
+    @patch('serial.Serial')
+    def test_cancel_during_backpressure_stops_immediately(self, serial_cls):
+        path = _hpgl_file(b'IN;PU0,0;PD' + b'10,10,' * 100 + b';')
+
+        def stop(data):
+            globals.printing = False
+            return 0
+
+        tty = self._tty(stop)
+        serial_cls.return_value = tty
+        diagnostics = []
+        try:
+            import send2serial
+            result = send2serial._send_creation_1200(
+                self.sio, path, '/dev/ttyFAKE',
+                diagnostics_callback=diagnostics.append,
+            )
+        finally:
+            os.remove(path)
+
+        self.assertFalse(result)
+        self.assertTrue(diagnostics[-1]['cancelled'])
+        self.assertEqual(diagnostics[-1]['phase'], 'cancelled')
+        tty.close.assert_called_once_with()
+
+    @patch('serial.Serial')
+    def test_stalled_cts_reports_state_and_fails(self, serial_cls):
+        path = _hpgl_file(b'IN;PU0,0;PD10,10;')
+        tty = self._tty(lambda _data: 0)
+        tty.cts = False
+        tty.out_waiting = 256
+        serial_cls.return_value = tty
+        diagnostics = []
+        try:
+            import send2serial
+            with patch.object(send2serial, '_CREATION_STALL_TIMEOUT_SECONDS', 0):
+                result = send2serial._send_creation_1200(
+                    self.sio, path, '/dev/ttyFAKE',
+                    diagnostics_callback=diagnostics.append,
+                )
+        finally:
+            os.remove(path)
+
+        self.assertFalse(result)
+        self.assertEqual(diagnostics[-1]['phase'], 'error')
+        emitted = ' '.join(str(call) for call in self.sio.emit.call_args_list)
+        self.assertIn('CTS=low', emitted)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Job queue serialization
 # ─────────────────────────────────────────────────────────────────────────────
@@ -316,6 +455,17 @@ class TestJobQueue(unittest.TestCase):
         self.assertEqual(jobs[0]['status'], 'completed')
         self.assertIsNotNone(jobs[0]['started_at'])
         self.assertIsNotNone(jobs[0]['finished_at'])
+
+    def test_transport_diagnostics_are_json_backed_and_returned_as_data(self):
+        import jobqueue
+        jid = jobqueue.enqueue_job('x.hpgl', '/dev/p', '9600', 'creation_1200')
+        diagnostics = {
+            'mode': 'buffered', 'bytes': 1234, 'partial_writes': 2,
+            'cts_low_seconds': 0.25,
+        }
+        jobqueue.update_transport_diagnostics(jid, diagnostics)
+        job = jobqueue.get_recent_jobs(limit=1)[0]
+        self.assertEqual(job['transport_diagnostics'], diagnostics)
 
     def test_failed_stores_error(self):
         import jobqueue

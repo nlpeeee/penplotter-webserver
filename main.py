@@ -60,8 +60,15 @@ def _execute_job(job):
 
     result = None
     error_msg = None
+    transport_diagnostics = {}
     globals.active_job_id = job_id
     globals.print_progress = 0.0
+
+    def store_transport_diagnostics(values):
+        transport_diagnostics.clear()
+        transport_diagnostics.update(values or {})
+        jobqueue.update_transport_diagnostics(job_id, transport_diagnostics)
+
     try:
         if not jobqueue.is_cancel_requested(job_id):
             result = send2serial.sendToPlotter(
@@ -71,7 +78,10 @@ def _execute_job(job):
                 int(job['baudrate']),
                 job['device'],
                 lambda: jobqueue.is_cancel_requested(job_id),
+                store_transport_diagnostics,
             )
+            if result is False and not jobqueue.is_cancel_requested(job_id):
+                error_msg = transport_diagnostics.get('error')
     except Exception as e:
         error_msg = str(e)
         socketio.emit('error', {'data': f'[Job {job_id}] Exception: {error_msg}'})
@@ -92,7 +102,8 @@ def _execute_job(job):
     globals.print_progress = 100.0 if status == 'completed' else 0.0
 
     jobqueue.update_job_status(job_id, status, error_msg)
-    socketio.emit('status_log', {'data': f'[Job {job_id}] {status.capitalize()}.'})
+    status_label = 'Transfer complete' if status == 'completed' else status.capitalize()
+    socketio.emit('status_log', {'data': f'[Job {job_id}] {status_label}.'})
     socketio.emit('lock_edit', {'data': 'off'})
     _emit_job_update()
 
@@ -281,7 +292,21 @@ def _workspace_svg_request(data):
             'placements': raw_item.get('placements') or [],
             'project_asset_id': asset_id or None,
         })
-    preparation = workspace.parse_preparation(data.get('preparation') or {})
+    try:
+        manifest_version = int(data.get('manifest_version', 1))
+    except (TypeError, ValueError):
+        raise workspace.WorkspaceError('Manifest version must be a whole number.')
+    preparation_values = dict(data.get('preparation') or {})
+    if manifest_version >= 2 and 'simplify_enabled' not in preparation_values:
+        preparation_values['simplify_enabled'] = True
+    preparation = workspace.parse_preparation(preparation_values)
+    operator_speed = workspace._finite_number(
+        data.get('operator_speed_mm_s', 50), 'Operator cutter speed'
+    )
+    if not 1 <= operator_speed <= 600:
+        raise workspace.WorkspaceError(
+            'Operator cutter speed must be between 1 and 600 mm/s.'
+        )
     layout = workspace.parse_layout(data.get('layout') or {})
     cutting_aids = workspace.parse_cutting_aids(data.get('cutting_aids') or {})
     calibration_request = data.get('calibration') or {}
@@ -338,7 +363,7 @@ def _workspace_svg_request(data):
         raise workspace.WorkspaceError('The selected material profile does not exist.')
     return (
         items, roll_width, layout, preparation, cutting_aids,
-        calibration, profile_snapshot,
+        calibration, profile_snapshot, operator_speed,
     )
 
 
@@ -348,17 +373,18 @@ def workspace_preview_api():
     try:
         (
             items, roll_width, layout, preparation, cutting_aids,
-            calibration, profile_snapshot,
+            calibration, profile_snapshot, operator_speed,
         ) = _workspace_svg_request(data)
         _paths, metadata = workspace.build_manifest_preview(
             items, roll_width, layout, preparation, cutting_aids, calibration
         )
+        workspace.add_transport_preflight(metadata, operator_speed)
     except FileNotFoundError as exc:
         return jsonify({'error': str(exc)}), 404
     except workspace.WorkspaceError as exc:
         return jsonify({'error': str(exc)}), 422
     metadata.update({
-        'manifest_version': 1,
+        'manifest_version': 2,
         'filename': items[0]['filename'],
         'profile_snapshot': profile_snapshot,
     })
@@ -373,7 +399,7 @@ def workspace_generate_api():
     try:
         (
             items, roll_width, layout, preparation, cutting_aids,
-            calibration, profile_snapshot,
+            calibration, profile_snapshot, operator_speed,
         ) = _workspace_svg_request(data)
         output, metadata = workspace.convert_manifest(
             items,
@@ -385,6 +411,7 @@ def workspace_generate_api():
             calibration=calibration,
             expected_geometry_hash=data.get('geometry_hash'),
         )
+        workspace.add_transport_preflight(metadata, operator_speed)
     except FileNotFoundError as exc:
         return jsonify({'error': str(exc)}), 404
     except workspace.WorkspaceError as exc:
@@ -401,6 +428,7 @@ def workspace_generate_api():
         'height_mm': round(metadata['height_mm'], 2),
         'geometry_hash': metadata['geometry_hash'],
         'statistics': metadata['after'],
+        'transport': metadata['transport'],
         'warnings': metadata['warnings'],
         'calibration': metadata['calibration'],
         'profile_snapshot': profile_snapshot,
@@ -618,7 +646,8 @@ def _project_thumbnail(paths, metadata):
 
 def _canonical_project_manifest(data, metadata):
     return {
-        'manifest_version': 1,
+        'manifest_version': int(data.get('manifest_version', 1)),
+        'operator_speed_mm_s': data.get('operator_speed_mm_s', 50),
         'roll_width_mm': data.get('roll_width_mm', 1200),
         'items': [
             {
@@ -652,11 +681,12 @@ def _save_project_request(project_id=None):
     try:
         (
             items, roll_width, layout, preparation, cutting_aids,
-            calibration, profile_snapshot,
+            calibration, profile_snapshot, operator_speed,
         ) = _workspace_svg_request(workspace_data)
         paths, metadata = workspace.build_manifest_preview(
             items, roll_width, layout, preparation, cutting_aids, calibration
         )
+        workspace.add_transport_preflight(metadata, operator_speed)
         metadata['profile_snapshot'] = profile_snapshot
         if not metadata['valid']:
             raise workspace.WorkspaceError(
@@ -763,7 +793,10 @@ def project_thumbnail_api(project_id, revision_number):
 def project_draft_api(project_id):
     data = request.get_json(silent=True) or {}
     try:
-        items, _roll, _layout, _prep, _aids, _calibration, _profile = _workspace_svg_request(data)
+        (
+            items, _roll, _layout, _prep, _aids, _calibration,
+            _profile, _operator_speed,
+        ) = _workspace_svg_request(data)
         sources = [
             {
                 'item_index': index,

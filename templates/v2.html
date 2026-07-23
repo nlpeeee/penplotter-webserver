@@ -148,7 +148,7 @@
           <div>
             <p class="v2-eyebrow">Production activity</p>
             <h1>Jobs</h1>
-            <p>Active, queued, completed, failed, and cancelled transmissions.</p>
+            <p>Active, queued, transferred, failed, and cancelled transmissions.</p>
           </div>
           <button class="v2-button v2-button-secondary refreshJobs" type="button">Refresh</button>
         </header>
@@ -157,7 +157,7 @@
             <button class="v2-filter-chip active" type="button" data-job-filter="all">All</button>
             <button class="v2-filter-chip" type="button" data-job-filter="queued">Queued</button>
             <button class="v2-filter-chip" type="button" data-job-filter="transmitting">Active</button>
-            <button class="v2-filter-chip" type="button" data-job-filter="completed">Completed</button>
+            <button class="v2-filter-chip" type="button" data-job-filter="completed">Transferred</button>
             <button class="v2-filter-chip" type="button" data-job-filter="failed">Failed</button>
             <button class="v2-filter-chip" type="button" data-job-filter="cancelled">Cancelled</button>
           </div>
@@ -391,8 +391,10 @@
                     <div class="v2-form-grid">
                       <label class="v2-check"><input id="workspaceMerge" class="workspace-preparation" type="checkbox"> Merge paths</label>
                       <input id="workspaceMergeTolerance" class="workspace-preparation" type="number" min="0.001" max="1" step="0.001" value="0.05" aria-label="Merge tolerance">
-                      <label class="v2-check"><input id="workspaceSimplify" class="workspace-preparation" type="checkbox"> Simplify</label>
-                      <input id="workspaceSimplifyTolerance" class="workspace-preparation" type="number" min="0.001" max="1" step="0.001" value="0.05" aria-label="Simplification tolerance">
+                      <label class="v2-check"><input id="workspaceSimplify" class="workspace-preparation" type="checkbox" checked> Safe 0.05 mm simplification</label>
+                      <input id="workspaceSimplifyTolerance" class="workspace-preparation" type="number" min="0.001" max="0.1" step="0.001" value="0.05" aria-label="Simplification tolerance">
+                      <label class="v2-field"><span>Cutter speed check (mm/s)</span><input id="workspaceOperatorSpeed" class="workspace-preparation" type="number" min="1" max="600" step="1" value="50"></label>
+                      <p class="v2-help">Used only to predict whether 9600-baud serial input can keep pace. PCP never changes the cutter-panel speed.</p>
                     </div>
                   </details>
                   <label class="v2-check"><input id="workspaceShowOriginal" type="checkbox"> Show original overlay</label>

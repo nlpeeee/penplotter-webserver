@@ -3,6 +3,7 @@
 import os
 import sys
 import unittest
+import math
 
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -115,6 +116,71 @@ class TestCutPreparation(unittest.TestCase):
         )
         self.assertEqual(len(prepared[0]), 2)
         self.assertLess(diagnostics['after']['point_count'], diagnostics['before']['point_count'])
+        self.assertEqual(diagnostics['maximum_deviation_mm'], 0.05)
+
+    def test_safe_simplification_stays_within_physical_tolerance(self):
+        from shapely.geometry import LineString
+
+        original = [
+            (index * 0.02, math.sin(index / 20.0) * 2.0)
+            for index in range(1000)
+        ]
+        prepared, diagnostics = workspace.prepare_paths(
+            [original],
+            workspace.Preparation(
+                inside_first=False,
+                minimize_travel=False,
+                simplify_enabled=True,
+                simplify_tolerance_mm=0.05,
+            ),
+        )
+        deviation = LineString(original).hausdorff_distance(LineString(prepared[0]))
+        self.assertLessEqual(deviation, 0.05 + 1e-9)
+        self.assertLess(diagnostics['after']['point_count'], 200)
+
+    def test_dense_curve_regression_is_reduced_to_streamable_size(self):
+        dense = [[
+            (
+                index * 0.01,
+                5.0 + math.sin(index / 150.0) * 2.0
+                + math.sin(index / 9.0) * 0.01,
+            )
+            for index in range(6050)
+        ]]
+        _prepared, diagnostics = workspace.prepare_paths(
+            dense,
+            workspace.Preparation(
+                inside_first=False,
+                minimize_travel=False,
+                simplify_enabled=True,
+                simplify_tolerance_mm=0.05,
+            ),
+        )
+        self.assertEqual(diagnostics['before']['point_count'], 6050)
+        self.assertLess(diagnostics['after']['point_count'], 300)
+        self.assertLess(diagnostics['after']['hpgl_bytes'], 3000)
+
+    def test_transport_preflight_matches_9600_baud_limits(self):
+        high = workspace.transport_preflight({
+            'hpgl_bytes': 63553,
+            'cut_length_mm': 1412.662,
+            'travel_length_mm': 0,
+        }, operator_speed_mm_s=50)
+        low = workspace.transport_preflight({
+            'hpgl_bytes': 2699,
+            'cut_length_mm': 1410.9,
+            'travel_length_mm': 0,
+        }, operator_speed_mm_s=50)
+        self.assertAlmostEqual(high['estimated_wire_seconds'], 66.201, places=3)
+        self.assertEqual(high['risk'], 'high')
+        self.assertEqual(low['risk'], 'low')
+
+    def test_simplification_never_accepts_more_than_point_one_mm(self):
+        with self.assertRaisesRegex(workspace.WorkspaceError, '0.1 mm'):
+            workspace.parse_preparation({
+                'simplify_enabled': True,
+                'simplify_tolerance_mm': 0.101,
+            })
 
     def test_hash_represents_exact_emitted_hpgl(self):
         paths, diagnostics = workspace.prepare_paths(

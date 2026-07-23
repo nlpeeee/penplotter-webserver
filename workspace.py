@@ -276,8 +276,8 @@ def parse_preparation(values=None) -> Preparation:
     )
     if not 0.001 <= merge_tolerance <= 1.0:
         raise WorkspaceError("Merge tolerance must be between 0.001 and 1 mm.")
-    if not 0.001 <= simplify_tolerance <= 1.0:
-        raise WorkspaceError("Simplification tolerance must be between 0.001 and 1 mm.")
+    if not 0.001 <= simplify_tolerance <= 0.1:
+        raise WorkspaceError("Simplification tolerance must be between 0.001 and 0.1 mm.")
     return Preparation(
         enabled=not str(values.get("enabled", "true")).lower() in {"0", "false", "no", "off"},
         remove_duplicates=not str(values.get("remove_duplicates", "true")).lower()
@@ -436,6 +436,62 @@ def _path_stats(paths: Sequence[Sequence[Point]]) -> dict:
         "travel_length_mm": round(travel, 3),
         "hpgl_bytes": len(hpgl_bytes(paths)),
     }
+
+
+def transport_preflight(statistics: dict, operator_speed_mm_s=50.0, baudrate=9600) -> dict:
+    """Estimate whether serial input can keep pace with commanded movement."""
+    speed = _finite_number(operator_speed_mm_s, "Operator cutter speed")
+    if not 1.0 <= speed <= 600.0:
+        raise WorkspaceError("Operator cutter speed must be between 1 and 600 mm/s.")
+    baud = int(baudrate)
+    if baud != 9600:
+        raise WorkspaceError("The Creation PCut transport is fixed at 9600 baud.")
+    hpgl_size = max(0, int(statistics.get("hpgl_bytes", 0)))
+    movement = max(
+        0.0,
+        float(statistics.get("cut_length_mm", 0.0))
+        + float(statistics.get("travel_length_mm", 0.0)),
+    )
+    wire_seconds = hpgl_size * 10.0 / baud
+    motion_seconds = movement / speed if movement else 0.0
+    ratio = wire_seconds / motion_seconds if motion_seconds else 0.0
+    if ratio < 0.5:
+        risk = "low"
+    elif ratio <= 1.0:
+        risk = "caution"
+    else:
+        risk = "high"
+    return {
+        "baudrate": baud,
+        "hpgl_bytes": hpgl_size,
+        "estimated_wire_seconds": round(wire_seconds, 3),
+        "operator_speed_mm_s": round(speed, 3),
+        "total_commanded_movement_mm": round(movement, 3),
+        "minimum_motion_seconds": round(motion_seconds, 3),
+        "wire_to_motion_ratio": round(ratio, 3),
+        "risk": risk,
+    }
+
+
+def add_transport_preflight(metadata: dict, operator_speed_mm_s=50.0) -> dict:
+    """Attach transport estimates and a non-blocking starvation warning."""
+    estimate = transport_preflight(metadata.get("after") or {}, operator_speed_mm_s)
+    metadata["transport"] = estimate
+    if estimate["risk"] in {"caution", "high"}:
+        severity = "warning"
+        qualifier = "may" if estimate["risk"] == "caution" else "is likely to"
+        metadata.setdefault("warnings", []).append({
+            "code": "serial_starvation_risk",
+            "severity": severity,
+            "message": (
+                f"At {estimate['operator_speed_mm_s']:g} mm/s, serial input {qualifier} "
+                "fall behind cutter movement. Keep safe simplification enabled or lower "
+                "the cutter-panel speed."
+            ),
+            "risk": estimate["risk"],
+            "wire_to_motion_ratio": estimate["wire_to_motion_ratio"],
+        })
+    return metadata
 
 
 def _quantized_paths(paths: Sequence[Sequence[Point]], collapse: bool = True) -> List[Path]:
@@ -664,7 +720,17 @@ def prepare_paths(paths: Sequence[Sequence[Point]], preparation: Preparation) ->
             "merge_tolerance_mm": preparation.merge_tolerance_mm,
             "simplify_enabled": preparation.simplify_enabled,
             "simplify_tolerance_mm": preparation.simplify_tolerance_mm,
+            "maximum_deviation_mm": (
+                preparation.simplify_tolerance_mm
+                if preparation.enabled and preparation.simplify_enabled
+                else 0.0
+            ),
         },
+        "maximum_deviation_mm": (
+            preparation.simplify_tolerance_mm
+            if preparation.enabled and preparation.simplify_enabled
+            else 0.0
+        ),
     }
 
 

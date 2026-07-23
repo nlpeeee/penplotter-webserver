@@ -8,6 +8,7 @@ WantedBy=multi-user.target
 
 [Service]
 User=pi
+Environment=PCP_PCUT_TRANSPORT=legacy
 WorkingDirectory=/home/pi/webplotter
 ExecStart= python3 /home/pi/webplotter/main.py
 TimeoutSec=600

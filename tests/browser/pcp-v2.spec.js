@@ -94,6 +94,21 @@ test('uploaded HPGL opens complete, exact, and read-only', async ({ page, reques
   await request.post('/delete_file', { data: { filename: 'ux-exact.hpgl' } });
 });
 
+test('new SVG preparation defaults to safe simplification and throughput preflight', async ({ page, request }) => {
+  const fixture = path.join(__dirname, 'fixtures', 'ux-circle.svg');
+  await page.goto('/v2');
+  await page.locator('input.dz-hidden-input').setInputFiles(fixture);
+  await expect(page).toHaveURL(/\/v2\/workbench\?file=ux-circle\.svg/);
+  await page.locator('[data-workspace-phase="prepare"]').click();
+  await expect(page.locator('#workspaceSimplify')).toBeChecked();
+  await expect(page.locator('#workspaceSimplifyTolerance')).toHaveValue('0.05');
+  await expect(page.locator('#workspaceSimplifyTolerance')).toHaveAttribute('max', '0.1');
+  await expect(page.locator('#workspaceOperatorSpeed')).toHaveValue('50');
+  await expect(page.locator('#workspacePreflightStats')).toContainText('9600-baud throughput');
+  await expect(page.locator('#workspacePreflightStats')).toContainText('Maximum simplification deviation: 0.050 mm');
+  await request.post('/delete_file', { data: { filename: 'ux-circle.svg' } });
+});
+
 test('critical accessibility checks pass on the production shell', async ({ page }) => {
   await page.goto('/v2');
   const results = await new AxeBuilder({ page })

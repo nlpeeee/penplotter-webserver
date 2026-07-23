@@ -99,9 +99,22 @@ device = creation_1200
 baudrate = 9600
 ```
 
-The `creation_1200` profile sends **only** the raw HPGL payload — no
-HP-specific ESC initialisation, status, buffer, or abort commands are ever
-sent to the cutter.
+The `creation_1200` profile sends one `IN;` controller preamble and then the
+stored HPGL byte stream without rewriting coordinate lists. No HP-specific ESC
+status, buffer, or abort commands are sent to the cutter. Linux RTS/CTS
+backpressure keeps the controller cache supplied without fixed inter-command
+delays.
+
+During the first physical validation release, select the sender with the
+service environment:
+
+```ini
+Environment=PCP_PCUT_TRANSPORT=legacy
+```
+
+Change this to `buffered` only for the supervised A/B test. After the buffered
+test is accepted it becomes the production setting; `legacy` remains a
+temporary rollback path for one release.
 
 ### ⚠️  WARNING — Do not run ser2net / RFC 2217 alongside PCP
 
@@ -124,7 +137,8 @@ concurrent writes are impossible.
 Job states visible in the **Job History** panel:
 - **queued** — waiting for the worker
 - **transmitting** — currently being sent to the cutter
-- **completed** — full file transmitted
+- **completed / Transfer complete** — the operating-system serial buffer has
+  drained; the cutter may still be executing commands from its internal cache
 - **failed** — serial or file error (error message shown in status log)
 - **cancelled** — stopped before transmission began
 
@@ -146,11 +160,14 @@ browser and the feed length grows to fit the job. A red path is outside the
 roll and cannot be generated. HPGL files open in an exact read-only view.
 
 The **Cut preparation** panel removes duplicate cutter paths and orders open
-lines and enclosed contours safely before minimizing pen-up travel. It reports
-path, point, distance, and HPGL-size changes. Path merging and simplification
-are opt-in and can be compared with the original overlay. Generation requires
-the geometry hash returned by the exact server preview, preventing a stale
-preview from producing a different cut.
+lines and enclosed contours safely before minimizing pen-up travel. New SVG
+workspaces also enable topology-preserving 0.05 mm simplification by default,
+which is below the cutter's documented repeatability and can be disabled.
+Existing saved project settings and uploaded HPGL remain exact. Original and
+prepared geometry, point/byte reductions, maximum deviation, theoretical
+9600-baud wire time, and starvation risk are shown before generation.
+Generation requires the geometry hash returned by the exact server preview,
+preventing a stale preview from producing a different cut.
 
 The **Copies and roll layout** panel can arrange multiple uploaded SVG designs
 and copy counts in deterministic left-to-right rows. Edge margin and spacing

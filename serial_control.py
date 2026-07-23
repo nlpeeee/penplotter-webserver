@@ -30,6 +30,12 @@ def cancel_active_write() -> bool:
                 cancel()
             except (OSError, serial.SerialException):
                 pass
+        reset_output = getattr(active, "reset_output_buffer", None)
+        if callable(reset_output):
+            try:
+                reset_output()
+            except (OSError, serial.SerialException):
+                pass
         return True
 
 
