@@ -156,6 +156,21 @@ overlap block generation. A built-in compensation test pattern covers curves,
 sharp corners, small details, and closure, and requires explicit media/tool
 confirmation before PCP will queue it.
 
+**Material profiles** save roll/layout values, weed settings, blade offset,
+overcut, notes, and suggested panel pressure/speed. New profiles start
+unverified with compensation disabled. Pressure and speed are an operator
+checklist only and are never transmitted to the CT-1200. Profiles can be
+verified only after accepting a physical test and can be imported/exported as
+PCP JSON; the permanent **Unprofiled** default cannot be deleted.
+
+**Per-cutter calibration** is keyed by the stable serial port and device. PCP
+generates an exact 100 × 100 mm square, calculates `100 / measured` X/Y
+factors, enforces a 0.90–1.10 range, and asks again for corrections over 2%.
+Accepted calibration remains independently switchable. Its factors are shown
+in the workspace, applied immediately before HPGL quantization, and included
+in calibrated output filenames and generation metadata. Calibration-pattern
+transmission requires an explicit media/tool confirmation.
+
 ## Running Tests
 
 ```bash
@@ -178,6 +193,7 @@ python -m unittest discover -s tests -v
 - [x] Preflight diagnostics and safe cut-path optimization
 - [x] Multiple SVG copies and deterministic roll layout
 - [x] Weeding, overcut, drag-blade compensation, and guarded test pattern
+- [x] Material profiles, operator checklist, and per-cutter X/Y calibration
 
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.

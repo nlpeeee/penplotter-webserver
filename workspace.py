@@ -70,6 +70,15 @@ class CuttingAids:
     blade_offset_mm: float = 0.25
 
 
+@dataclass(frozen=True)
+class Calibration:
+    enabled: bool = False
+    factor_x: float = 1.0
+    factor_y: float = 1.0
+    serial_port: str = ""
+    device: str = ""
+
+
 def _bounds(paths: Sequence[Sequence[Point]]) -> Tuple[float, float, float, float]:
     points = [point for path in paths for point in path]
     if not points:
@@ -328,6 +337,22 @@ def parse_cutting_aids(values=None) -> CuttingAids:
             values.get("blade_compensation_enabled", False)
         ),
         blade_offset_mm=blade_offset,
+    )
+
+
+def parse_calibration(values=None) -> Calibration:
+    values = values or {}
+    enabled = _truthy(values.get("enabled", False))
+    factor_x = _finite_number(values.get("factor_x", 1), "X calibration factor")
+    factor_y = _finite_number(values.get("factor_y", 1), "Y calibration factor")
+    if not 0.90 <= factor_x <= 1.10 or not 0.90 <= factor_y <= 1.10:
+        raise WorkspaceError("Calibration factors must be between 0.90 and 1.10.")
+    return Calibration(
+        enabled=enabled,
+        factor_x=factor_x,
+        factor_y=factor_y,
+        serial_port=str(values.get("serial_port", ""))[:500],
+        device=str(values.get("device", ""))[:100],
     )
 
 
@@ -966,9 +991,11 @@ def build_manifest_preview(
     layout: Layout,
     preparation: Preparation,
     cutting_aids: CuttingAids | None = None,
+    calibration: Calibration | None = None,
 ) -> Tuple[List[Path], dict]:
     """Compose SVG copies on roll media and prepare one canonical cutter path."""
     cutting_aids = cutting_aids or CuttingAids()
+    calibration = calibration or Calibration()
     if not items:
         raise WorkspaceError("At least one SVG design is required.")
     if not 0.1 <= roll_width_mm <= MAX_ROLL_WIDTH_MM:
@@ -1113,6 +1140,14 @@ def build_manifest_preview(
             })
     else:
         emitted_paths = contour_paths
+    if calibration.enabled:
+        emitted_paths = [
+            [
+                (point[0] * calibration.factor_x, point[1] * calibration.factor_y)
+                for point in path
+            ]
+            for path in emitted_paths
+        ]
     point_count = sum(len(path) for path in emitted_paths)
     if point_count > 1_000_000:
         raise WorkspaceError("Prepared cutting aids exceed the 1,000,000 point safety limit.")
@@ -1166,7 +1201,11 @@ def build_manifest_preview(
         "design_area_mm2": round(sum(i["width"] * i["height"] for i in instances), 2),
         "original_paths": _json_paths(intended),
         "intended_paths": _json_paths(contour_paths),
-        "compensated_paths": _json_paths(compensated_paths),
+        "compensated_paths": _json_paths(
+            emitted_paths
+            if cutting_aids.blade_compensation_enabled or calibration.enabled
+            else []
+        ),
         "weed_paths": _json_paths(weed_lines),
         "weed_border_paths": _json_paths(weed_borders),
         "cut_paths": _json_paths(emitted_paths),
@@ -1189,6 +1228,13 @@ def build_manifest_preview(
             "blade_offset_mm": cutting_aids.blade_offset_mm,
             "compensation_valid": compensation_valid,
         },
+        "calibration": {
+            "enabled": calibration.enabled,
+            "factor_x": calibration.factor_x,
+            "factor_y": calibration.factor_y,
+            "serial_port": calibration.serial_port,
+            "device": calibration.device,
+        },
         "layout": {
             "automatic": layout.automatic,
             "edge_margin_mm": layout.edge_margin_mm,
@@ -1206,20 +1252,27 @@ def convert_manifest(
     preparation: Preparation,
     output_directory: str,
     cutting_aids: CuttingAids | None = None,
+    calibration: Calibration | None = None,
     expected_geometry_hash: str | None = None,
 ) -> Tuple[str, dict]:
     paths, metadata = build_manifest_preview(
-        items, roll_width_mm, layout, preparation, cutting_aids
+        items, roll_width_mm, layout, preparation, cutting_aids, calibration
     )
     if not metadata["valid"]:
         raise WorkspaceError("The arranged workspace has collisions or is outside the loaded roll.")
     if expected_geometry_hash and expected_geometry_hash != metadata["geometry_hash"]:
         raise WorkspaceError("The cut geometry changed after preview. Refresh the preview and try again.")
     stem = os.path.splitext(items[0]["filename"])[0] if len(items) == 1 else "pcp-layout"
+    calibration_label = ""
+    if metadata["calibration"]["enabled"]:
+        calibration_label = (
+            f"_cal{metadata['calibration']['factor_x']:.6f}"
+            f"x{metadata['calibration']['factor_y']:.6f}"
+        )
     output_file = os.path.join(
         output_directory,
         f"{stem}_{metadata['width_mm']:.1f}x{metadata['height_mm']:.1f}mm_"
-        f"{metadata['geometry_hash'][:8]}.hpgl",
+        f"{metadata['geometry_hash'][:8]}{calibration_label}.hpgl",
     )
     _atomic_write_hpgl(output_file, paths)
     return output_file, metadata

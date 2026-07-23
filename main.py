@@ -7,6 +7,8 @@ import time
 import threading
 import subprocess
 import configparser
+import sqlite3
+import re
 
 from flask import Flask, Response, render_template, request, redirect, url_for, abort, send_from_directory, jsonify
 from werkzeug.utils import secure_filename
@@ -18,6 +20,7 @@ import tasmota
 import jobqueue
 import serial_control
 import workspace
+import production_store
 from preview import PreviewError, hpgl_preview, svg_preview
 
 # Read Configuration
@@ -270,16 +273,49 @@ def _workspace_svg_request(data):
     preparation = workspace.parse_preparation(data.get('preparation') or {})
     layout = workspace.parse_layout(data.get('layout') or {})
     cutting_aids = workspace.parse_cutting_aids(data.get('cutting_aids') or {})
-    return items, roll_width, layout, preparation, cutting_aids
+    calibration_request = data.get('calibration') or {}
+    if workspace._truthy(calibration_request.get('enabled', False)):
+        serial_port = str(calibration_request.get('serial_port', ''))
+        device = str(calibration_request.get('device', ''))
+        stored_calibration = production_store.get_calibration(serial_port, device)
+        if not stored_calibration or not stored_calibration['accepted']:
+            raise workspace.WorkspaceError(
+                'The selected cutter does not have an accepted calibration.'
+            )
+        if not stored_calibration['enabled']:
+            raise workspace.WorkspaceError(
+                'The selected cutter calibration is currently disabled.'
+            )
+        calibration = workspace.parse_calibration({
+            **stored_calibration,
+            'serial_port': serial_port,
+            'device': device,
+        })
+    else:
+        calibration = workspace.Calibration(
+            serial_port=str(calibration_request.get('serial_port', ''))[:500],
+            device=str(calibration_request.get('device', ''))[:100],
+        )
+    profile_id = str(data.get('material_profile_id') or production_store.UNPROFILED_ID)
+    profile_snapshot = production_store.get_profile(profile_id)
+    if profile_snapshot is None:
+        raise workspace.WorkspaceError('The selected material profile does not exist.')
+    return (
+        items, roll_width, layout, preparation, cutting_aids,
+        calibration, profile_snapshot,
+    )
 
 
 @app.route('/api/workspace/preview', methods=['POST'])
 def workspace_preview_api():
     data = request.get_json(silent=True) or {}
     try:
-        items, roll_width, layout, preparation, cutting_aids = _workspace_svg_request(data)
+        (
+            items, roll_width, layout, preparation, cutting_aids,
+            calibration, profile_snapshot,
+        ) = _workspace_svg_request(data)
         _paths, metadata = workspace.build_manifest_preview(
-            items, roll_width, layout, preparation, cutting_aids
+            items, roll_width, layout, preparation, cutting_aids, calibration
         )
     except FileNotFoundError as exc:
         return jsonify({'error': str(exc)}), 404
@@ -288,6 +324,7 @@ def workspace_preview_api():
     metadata.update({
         'manifest_version': 1,
         'filename': items[0]['filename'],
+        'profile_snapshot': profile_snapshot,
     })
     response = jsonify(metadata)
     response.headers['Cache-Control'] = 'no-store'
@@ -298,7 +335,10 @@ def workspace_preview_api():
 def workspace_generate_api():
     data = request.get_json(silent=True) or {}
     try:
-        items, roll_width, layout, preparation, cutting_aids = _workspace_svg_request(data)
+        (
+            items, roll_width, layout, preparation, cutting_aids,
+            calibration, profile_snapshot,
+        ) = _workspace_svg_request(data)
         output, metadata = workspace.convert_manifest(
             items,
             roll_width,
@@ -306,6 +346,7 @@ def workspace_generate_api():
             preparation,
             os.path.abspath(app.config['UPLOAD_PATH']),
             cutting_aids=cutting_aids,
+            calibration=calibration,
             expected_geometry_hash=data.get('geometry_hash'),
         )
     except FileNotFoundError as exc:
@@ -325,6 +366,8 @@ def workspace_generate_api():
         'geometry_hash': metadata['geometry_hash'],
         'statistics': metadata['after'],
         'warnings': metadata['warnings'],
+        'calibration': metadata['calibration'],
+        'profile_snapshot': profile_snapshot,
     })
 
 
@@ -361,6 +404,153 @@ def workspace_test_pattern():
     return jsonify({
         'filename': filename,
         'message': 'Created the PCP compensation test pattern. Preview it before cutting.',
+        'requires_operator_confirmation': True,
+    })
+
+
+@app.route('/api/material-profiles', methods=['GET', 'POST'])
+def material_profiles_api():
+    if request.method == 'GET':
+        return jsonify({'profiles': production_store.list_profiles()})
+    try:
+        profile = production_store.create_profile(request.get_json(silent=True) or {})
+    except (ValueError, TypeError, sqlite3.IntegrityError) as exc:
+        return jsonify({'error': str(exc)}), 422
+    return jsonify(profile), 201
+
+
+@app.route('/api/material-profiles/export')
+def material_profiles_export_api():
+    response = jsonify(production_store.export_profiles())
+    response.headers['Content-Disposition'] = 'attachment; filename=pcp-material-profiles.json'
+    return response
+
+
+@app.route('/api/material-profiles/import', methods=['POST'])
+def material_profiles_import_api():
+    try:
+        profiles = production_store.import_profiles(request.get_json(silent=True) or {})
+    except (ValueError, TypeError, sqlite3.IntegrityError) as exc:
+        return jsonify({'error': str(exc)}), 422
+    return jsonify({'imported': profiles}), 201
+
+
+@app.route('/api/material-profiles/<profile_id>', methods=['GET', 'PUT', 'DELETE'])
+def material_profile_api(profile_id):
+    if request.method == 'GET':
+        profile = production_store.get_profile(profile_id)
+        return (jsonify(profile), 200) if profile else (jsonify({'error': 'Profile not found.'}), 404)
+    try:
+        if request.method == 'DELETE':
+            if not production_store.delete_profile(profile_id):
+                return jsonify({'error': 'Profile not found.'}), 404
+            return jsonify({'deleted': True})
+        profile = production_store.update_profile(
+            profile_id, request.get_json(silent=True) or {}
+        )
+        if profile is None:
+            return jsonify({'error': 'Profile not found.'}), 404
+        return jsonify(profile)
+    except (ValueError, TypeError, sqlite3.IntegrityError) as exc:
+        return jsonify({'error': str(exc)}), 422
+
+
+@app.route('/api/material-profiles/<profile_id>/verify', methods=['POST'])
+def material_profile_verify_api(profile_id):
+    try:
+        profile = production_store.mark_profile_verified(
+            profile_id,
+            (request.get_json(silent=True) or {}).get('test_cut_accepted') is True,
+        )
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 422
+    if profile is None:
+        return jsonify({'error': 'Profile not found.'}), 404
+    return jsonify(profile)
+
+
+@app.route('/api/cutter-calibrations', methods=['GET', 'POST', 'PUT'])
+def cutter_calibrations_api():
+    if request.method == 'GET':
+        serial_port = request.args.get('serial_port')
+        device = request.args.get('device')
+        if serial_port is not None and device is not None:
+            calibration = production_store.get_calibration(serial_port, device)
+            return jsonify({'calibration': calibration})
+        return jsonify({'calibrations': production_store.list_calibrations()})
+    values = request.get_json(silent=True) or {}
+    try:
+        if request.method == 'PUT':
+            calibration = production_store.set_calibration_enabled(
+                str(values.get('serial_port', '')),
+                str(values.get('device', '')),
+                values.get('enabled') is True,
+            )
+            if calibration is None:
+                return jsonify({'error': 'Accepted cutter calibration not found.'}), 404
+            return jsonify(calibration)
+        serial_port = str(values.get('serial_port', ''))
+        if not (
+            serial_port.startswith('/dev/serial/by-id/')
+            or re.fullmatch(r'COM[1-9][0-9]*', serial_port, re.IGNORECASE)
+        ):
+            raise ValueError(
+                'Calibration requires a stable /dev/serial/by-id/... port '
+                '(or a COM port on Windows).'
+            )
+        candidate = production_store.calibration_candidate(
+            values.get('measured_x_mm'), values.get('measured_y_mm')
+        )
+        if values.get('accept') is not True:
+            return jsonify({
+                **candidate,
+                'accepted': False,
+                'enabled': False,
+                'requires_additional_confirmation': candidate['large_correction'],
+            })
+        calibration = production_store.save_calibration(
+            serial_port,
+            values.get('device'),
+            values.get('measured_x_mm'),
+            values.get('measured_y_mm'),
+            enabled=values.get('enabled') is True,
+            confirm_large_correction=values.get('confirm_large_correction') is True,
+        )
+        return jsonify(calibration), 201
+    except (ValueError, TypeError) as exc:
+        return jsonify({'error': str(exc)}), 422
+
+
+@app.route('/api/cutter-calibrations/pattern', methods=['POST'])
+def cutter_calibration_pattern_api():
+    filename = 'PCP_calibration_100mm.svg'
+    destination = os.path.join(app.config['UPLOAD_PATH'], filename)
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" '
+        'viewBox="0 0 100 100"><path d="M0 0H100V100H0Z"/></svg>'
+    )
+    temporary = tempfile.NamedTemporaryFile(
+        mode='w', encoding='utf-8', prefix='.pcp-calibration-', suffix='.svg',
+        dir=app.config['UPLOAD_PATH'], delete=False,
+    )
+    try:
+        temporary.write(svg)
+        temporary.flush()
+        os.fsync(temporary.fileno())
+        temporary.close()
+        os.replace(temporary.name, destination)
+    except OSError as exc:
+        if not temporary.closed:
+            temporary.close()
+        if os.path.exists(temporary.name):
+            os.unlink(temporary.name)
+        return jsonify({'error': 'Could not create the calibration square: ' + str(exc)}), 500
+    return jsonify({
+        'filename': filename,
+        'message': (
+            'Created the exact 100 × 100 mm calibration square. '
+            'Preview it before physical cutting.'
+        ),
         'requires_operator_confirmation': True,
     })
 
@@ -491,7 +681,10 @@ def start_plot():
         if not os.path.exists(file):
             return 'File not found', 400
         if (
-            filename.startswith('PCP_compensation_test')
+            (
+                filename.startswith('PCP_compensation_test')
+                or filename.startswith('PCP_calibration_100mm')
+            )
             and request.form.get('operator_confirm_test') != 'confirmed'
         ):
             return jsonify({
@@ -740,6 +933,7 @@ if __name__ == "__main__":
 
     # Initialise SQLite job database
     jobqueue.init_db()
+    production_store.init_db()
 
     # Start the background job-queue worker (daemon so it exits with the app).
     worker = threading.Thread(target=_job_worker, daemon=True, name='job-worker')

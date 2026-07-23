@@ -142,7 +142,10 @@ class TestCopiesAndRollLayout(unittest.TestCase):
             '_paths': paths,
         }
 
-    def preview(self, items, roll_width=100, layout=None, cutting_aids=None):
+    def preview(
+        self, items, roll_width=100, layout=None, cutting_aids=None,
+        calibration=None,
+    ):
         sources = {item['filepath']: item['_paths'] for item in items}
         clean_items = [{key: value for key, value in item.items() if key != '_paths'} for item in items]
         with unittest.mock.patch.object(
@@ -154,6 +157,7 @@ class TestCopiesAndRollLayout(unittest.TestCase):
                 layout or workspace.Layout(),
                 workspace.Preparation(enabled=False),
                 cutting_aids,
+                calibration,
             )
 
     def test_deterministic_rows_preserve_design_and_copy_order(self):
@@ -289,6 +293,35 @@ class TestVinylCuttingAids(TestCopiesAndRollLayout):
             metadata['geometry_hash'],
             hashlib.sha256(workspace.hpgl_bytes(paths)).hexdigest(),
         )
+
+
+class TestCutterCalibration(TestCopiesAndRollLayout):
+    def test_calibration_scales_commanded_path_and_is_recorded(self):
+        item = self.item('art.svg', RECT, 20, 10)
+        paths, metadata = self.preview(
+            [item],
+            calibration=workspace.Calibration(
+                enabled=True,
+                factor_x=1.01,
+                factor_y=0.99,
+                serial_port='/dev/serial/by-id/cutter',
+                device='creation_1200',
+            ),
+        )
+        self.assertAlmostEqual(metadata['cut_paths'][0][1][0], 25.25)
+        self.assertAlmostEqual(metadata['cut_paths'][0][2][1], 14.85)
+        self.assertNotEqual(metadata['intended_paths'], metadata['cut_paths'])
+        self.assertEqual(metadata['calibration']['factor_x'], 1.01)
+        self.assertEqual(metadata['calibration']['factor_y'], 0.99)
+        import hashlib
+        self.assertEqual(
+            metadata['geometry_hash'],
+            hashlib.sha256(workspace.hpgl_bytes(paths)).hexdigest(),
+        )
+
+    def test_calibration_factor_safety_bounds(self):
+        with self.assertRaisesRegex(workspace.WorkspaceError, 'between 0.90 and 1.10'):
+            workspace.parse_calibration({'enabled': True, 'factor_x': 1.2, 'factor_y': 1})
 
 
 if __name__ == '__main__':

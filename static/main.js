@@ -268,9 +268,12 @@ function startPlot() {
       console.error(error);
     });
   };
-  if (jQuery('#fileName').val().indexOf('PCP_compensation_test') === 0) {
+  if (
+    jQuery('#fileName').val().indexOf('PCP_compensation_test') === 0
+    || jQuery('#fileName').val().indexOf('PCP_calibration_100mm') === 0
+  ) {
     UIkit.modal.confirm(
-      'Physical compensation test: confirm media is loaded and the blade/tool is ready. Commands already buffered by the cutter cannot be recalled.'
+      'Physical cutter test: confirm media is loaded and the blade/tool is ready. Commands already buffered by the cutter cannot be recalled.'
     ).then(function() { submit(true); });
   } else {
     submit(false);
@@ -525,12 +528,23 @@ var cutterWorkspace = {
   animationFrame: null, animationProgress: 1, animationElements: [],
   renderedPaths: [], renderedTravels: [], pointer: null, syncingDimensions: false,
   serverPreview: null, preparationTimer: null, preparationRequestId: 0,
-  manifestItems: [], selectedItemIndex: 0, selectedInstanceId: null
+  manifestItems: [], selectedItemIndex: 0, selectedInstanceId: null,
+  profiles: [], selectedProfileId: 'unprofiled',
+  calibration: null, calibrationCandidate: null
 };
 
 function workspaceNumber(selector, fallback) {
   var value = parseFloat(jQuery(selector).val());
   return Number.isFinite(value) ? value : fallback;
+}
+
+function workspaceCutterKey() {
+  return {
+    serial_port: jQuery('#useCustomPort').is(':checked')
+      ? String(jQuery('#customPort').val() || '')
+      : String(jQuery('#portList').val() || ''),
+    device: String(jQuery('#device').val() || 'creation_1200')
+  };
 }
 
 function workspacePathD(path) {
@@ -588,6 +602,7 @@ function workspaceRequestData() {
   return {
     manifest_version: 1,
     filename: cutterWorkspace.filename,
+    material_profile_id: cutterWorkspace.selectedProfileId || 'unprofiled',
     roll_width_mm: workspaceNumber('#workspaceRollWidth', 1200),
     items: cutterWorkspace.manifestItems.map(function(item) {
       return {
@@ -637,6 +652,11 @@ function workspaceRequestData() {
       overcut_mm: workspaceNumber('#workspaceOvercut', 1),
       blade_compensation_enabled: jQuery('#workspaceBladeCompensation').is(':checked'),
       blade_offset_mm: workspaceNumber('#workspaceBladeOffset', 0.25)
+    },
+    calibration: {
+      enabled: jQuery('#workspaceCalibrationEnabled').is(':checked'),
+      serial_port: workspaceCutterKey().serial_port,
+      device: workspaceCutterKey().device
     }
   };
 }
@@ -672,6 +692,128 @@ function workspacePopulateDesignSelect() {
   jQuery('#workspaceAddDesignSelect').html(names.map(function(name) {
     return '<option value="' + workspaceEscape(name) + '">' + workspaceEscape(name) + '</option>';
   }).join(''));
+}
+
+function workspaceSelectedProfile() {
+  return cutterWorkspace.profiles.find(function(profile) {
+    return profile.id === cutterWorkspace.selectedProfileId;
+  }) || null;
+}
+
+function workspaceRenderProfile(profile) {
+  if (!profile) return;
+  jQuery('#workspaceProfileNotes').val(profile.notes || '');
+  jQuery('#workspaceSuggestedPressure').val(profile.suggested_pressure || '');
+  jQuery('#workspaceSuggestedSpeed').val(profile.suggested_speed || '');
+  jQuery('#workspaceProfileDelete').prop('disabled', !profile.deletable);
+  jQuery('#workspaceProfileSave').prop('disabled', !profile.deletable);
+  jQuery('#workspaceProfileVerify').prop('disabled', !profile.deletable || profile.verified);
+  var checklist = 'Set pressure and speed on the cutter panel only.';
+  if (profile.suggested_pressure) checklist += ' Pressure: ' + profile.suggested_pressure + '.';
+  if (profile.suggested_speed) checklist += ' Speed: ' + profile.suggested_speed + '.';
+  jQuery('#workspaceOperatorChecklist').text(checklist);
+  jQuery('#workspaceProfileStatus').text(
+    profile.id === 'unprofiled' ? 'Permanent default • no settings are sent to the cutter.'
+      : (profile.verified
+        ? 'Verified profile • saved geometry settings are applied visibly.'
+        : 'Unverified • complete and accept a physical test before automatic application.')
+  );
+}
+
+function workspaceApplyVerifiedProfile(profile) {
+  if (!profile || !profile.verified) return;
+  var weed = profile.weed_settings || {};
+  jQuery('#workspaceRollWidth').val(Number(profile.roll_width_mm).toFixed(1));
+  jQuery('#workspaceEdgeMargin').val(Number(profile.edge_margin_mm).toFixed(1));
+  jQuery('#workspaceCopySpacing').val(Number(profile.copy_spacing_mm).toFixed(1));
+  jQuery('#workspaceWeedEnabled').prop('checked', !!weed.weed_enabled);
+  jQuery('#workspaceWeedBorderMode').val(weed.weed_border_mode || 'layout');
+  jQuery('#workspaceWeedMargin').val(Number(weed.weed_margin_mm == null ? 5 : weed.weed_margin_mm));
+  jQuery('#workspaceWeedHorizontal').prop('checked', !!weed.weed_horizontal);
+  jQuery('#workspaceWeedVertical').prop('checked', !!weed.weed_vertical);
+  jQuery('#workspaceBladeOffset').val(Number(profile.blade_offset_mm).toFixed(2));
+  jQuery('#workspaceBladeCompensation').prop('checked', !!profile.blade_offset_enabled);
+  jQuery('#workspaceOvercut').val(Number(profile.overcut_mm).toFixed(2));
+  jQuery('#workspaceOvercutEnabled').prop('checked', !!profile.overcut_enabled);
+  workspaceSchedulePreparation(false);
+}
+
+function workspaceLoadProfiles(selectedId, applyVerified) {
+  return axios.get('/api/material-profiles').then(function(response) {
+    cutterWorkspace.profiles = response.data.profiles || [];
+    var requested = selectedId || cutterWorkspace.selectedProfileId || 'unprofiled';
+    if (!cutterWorkspace.profiles.some(function(profile) { return profile.id === requested; })) {
+      requested = 'unprofiled';
+    }
+    cutterWorkspace.selectedProfileId = requested;
+    jQuery('#workspaceMaterialProfile').html(cutterWorkspace.profiles.map(function(profile) {
+      return '<option value="' + workspaceEscape(profile.id) + '">' +
+        workspaceEscape(profile.name + (profile.verified ? ' ✓' : '')) + '</option>';
+    }).join('')).val(requested);
+    var profile = workspaceSelectedProfile();
+    workspaceRenderProfile(profile);
+    if (applyVerified) workspaceApplyVerifiedProfile(profile);
+    return profile;
+  });
+}
+
+function workspaceProfileValues(name) {
+  return {
+    name: name || (workspaceSelectedProfile() || {}).name || '',
+    notes: jQuery('#workspaceProfileNotes').val() || '',
+    roll_width_mm: workspaceNumber('#workspaceRollWidth', 1200),
+    edge_margin_mm: workspaceNumber('#workspaceEdgeMargin', 5),
+    copy_spacing_mm: workspaceNumber('#workspaceCopySpacing', 5),
+    suggested_pressure: jQuery('#workspaceSuggestedPressure').val() || '',
+    suggested_speed: jQuery('#workspaceSuggestedSpeed').val() || '',
+    weed_settings: {
+      weed_enabled: jQuery('#workspaceWeedEnabled').is(':checked'),
+      weed_border_mode: jQuery('#workspaceWeedBorderMode').val() || 'layout',
+      weed_margin_mm: workspaceNumber('#workspaceWeedMargin', 5),
+      weed_horizontal: jQuery('#workspaceWeedHorizontal').is(':checked'),
+      weed_vertical: jQuery('#workspaceWeedVertical').is(':checked')
+    },
+    blade_offset_mm: workspaceNumber('#workspaceBladeOffset', 0.25),
+    blade_offset_enabled: jQuery('#workspaceBladeCompensation').is(':checked'),
+    overcut_mm: workspaceNumber('#workspaceOvercut', 1),
+    overcut_enabled: jQuery('#workspaceOvercutEnabled').is(':checked')
+  };
+}
+
+function workspaceRenderCalibration(calibration) {
+  cutterWorkspace.calibration = calibration || null;
+  var key = workspaceCutterKey();
+  jQuery('#workspaceCalibrationKey').text(
+    (key.serial_port || 'No serial port selected') + ' • ' + key.device
+  );
+  jQuery('#workspaceCalibrationEnabled')
+    .prop('checked', !!(calibration && calibration.enabled))
+    .prop('disabled', !calibration || !calibration.accepted);
+  if (calibration) {
+    jQuery('#workspaceMeasuredX').val(Number(calibration.measured_x_mm).toFixed(2));
+    jQuery('#workspaceMeasuredY').val(Number(calibration.measured_y_mm).toFixed(2));
+    jQuery('#workspaceCalibrationResult').text(
+      'Accepted factors: X ' + Number(calibration.factor_x).toFixed(6) +
+      ' • Y ' + Number(calibration.factor_y).toFixed(6) +
+      (calibration.large_correction ? ' • correction exceeds 2%' : '')
+    );
+  } else {
+    jQuery('#workspaceCalibrationResult').text('No accepted calibration for this cutter.');
+  }
+}
+
+function workspaceLoadCalibration() {
+  var key = workspaceCutterKey();
+  cutterWorkspace.calibrationCandidate = null;
+  jQuery('#workspaceCalibrationAccept').prop('disabled', true);
+  if (!key.serial_port) {
+    workspaceRenderCalibration(null);
+    return Promise.resolve(null);
+  }
+  return axios.get('/api/cutter-calibrations', { params: key }).then(function(response) {
+    workspaceRenderCalibration(response.data.calibration);
+    return response.data.calibration;
+  });
 }
 
 function workspaceSyncControlsFromItem() {
@@ -1059,6 +1201,156 @@ function workspaceClientPoint(event) {
 }
 
 function workspaceBindControls() {
+  jQuery('#workspaceMaterialProfile').off('.workspace').on('change.workspace', function() {
+    cutterWorkspace.selectedProfileId = jQuery(this).val() || 'unprofiled';
+    var profile = workspaceSelectedProfile();
+    workspaceRenderProfile(profile);
+    workspaceApplyVerifiedProfile(profile);
+  });
+  jQuery('#workspaceProfileNew').off('.workspace').on('click.workspace', function() {
+    UIkit.modal.prompt('New material profile name', '').then(function(name) {
+      if (!name) return;
+      axios.post('/api/material-profiles', workspaceProfileValues(name))
+        .then(function(response) {
+          cutterWorkspace.selectedProfileId = response.data.id;
+          return workspaceLoadProfiles(response.data.id, false);
+        })
+        .then(function() { notify('Material profile created with compensation disabled.', 'success'); })
+        .catch(function(error) {
+          notify(error.response && error.response.data ? error.response.data.error : error.message, 'danger');
+        });
+    });
+  });
+  jQuery('#workspaceProfileSave').off('.workspace').on('click.workspace', function() {
+    var profile = workspaceSelectedProfile();
+    if (!profile) return;
+    axios.put('/api/material-profiles/' + encodeURIComponent(profile.id), workspaceProfileValues())
+      .then(function(response) {
+        return workspaceLoadProfiles(response.data.id, false);
+      })
+      .then(function() { notify('Material profile saved.', 'success'); })
+      .catch(function(error) {
+        notify(error.response && error.response.data ? error.response.data.error : error.message, 'danger');
+      });
+  });
+  jQuery('#workspaceProfileVerify').off('.workspace').on('click.workspace', function() {
+    var profile = workspaceSelectedProfile();
+    if (!profile || !profile.deletable) return;
+    UIkit.modal.confirm(
+      'Confirm that a physical test cut using these settings has been completed and accepted.'
+    ).then(function() {
+      return axios.post('/api/material-profiles/' + encodeURIComponent(profile.id) + '/verify', {
+        test_cut_accepted: true
+      });
+    }).then(function(response) {
+      return workspaceLoadProfiles(response.data.id, true);
+    }).then(function() {
+      notify('Profile verified; its saved preparation settings are now applied.', 'success');
+    }).catch(function(error) {
+      if (error && error.response) {
+        notify(error.response.data.error || error.message, 'danger');
+      }
+    });
+  });
+  jQuery('#workspaceProfileDelete').off('.workspace').on('click.workspace', function() {
+    var profile = workspaceSelectedProfile();
+    if (!profile || !profile.deletable) return;
+    UIkit.modal.confirm('Delete material profile “' + profile.name + '”?').then(function() {
+      return axios.delete('/api/material-profiles/' + encodeURIComponent(profile.id));
+    }).then(function() {
+      cutterWorkspace.selectedProfileId = 'unprofiled';
+      return workspaceLoadProfiles('unprofiled', false);
+    }).then(function() { notify('Material profile deleted.', 'warning'); });
+  });
+  jQuery('#workspaceProfileExport').off('.workspace').on('click.workspace', function() {
+    window.location.assign('/api/material-profiles/export');
+  });
+  jQuery('#workspaceProfileImport').off('.workspace').on('click.workspace', function() {
+    jQuery('#workspaceProfileImportFile').val('').trigger('click');
+  });
+  jQuery('#workspaceProfileImportFile').off('.workspace').on('change.workspace', function() {
+    var file = this.files && this.files[0];
+    if (!file) return;
+    file.text().then(JSON.parse).then(function(document) {
+      return axios.post('/api/material-profiles/import', document);
+    }).then(function(response) {
+      notify('Imported ' + response.data.imported.length + ' material profile(s).', 'success');
+      return workspaceLoadProfiles(null, false);
+    }).catch(function(error) {
+      notify(error.response && error.response.data ? error.response.data.error : error.message, 'danger');
+    });
+  });
+  jQuery('#workspaceCalibrationPattern').off('.workspace').on('click.workspace', function() {
+    axios.post('/api/cutter-calibrations/pattern').then(function(response) {
+      return updateFiles(response.data.filename).then(function() {
+        notify(response.data.message, 'primary');
+        previewFile(response.data.filename);
+      });
+    }).catch(function(error) {
+      notify(error.response && error.response.data ? error.response.data.error : error.message, 'danger');
+    });
+  });
+  jQuery('#workspaceCalibrationCalculate').off('.workspace').on('click.workspace', function() {
+    var key = workspaceCutterKey();
+    axios.post('/api/cutter-calibrations', {
+      serial_port: key.serial_port,
+      device: key.device,
+      measured_x_mm: workspaceNumber('#workspaceMeasuredX', 0),
+      measured_y_mm: workspaceNumber('#workspaceMeasuredY', 0),
+      accept: false
+    }).then(function(response) {
+      cutterWorkspace.calibrationCandidate = response.data;
+      jQuery('#workspaceCalibrationResult').text(
+        'Proposed factors: X ' + Number(response.data.factor_x).toFixed(6) +
+        ' • Y ' + Number(response.data.factor_y).toFixed(6) +
+        (response.data.large_correction ? ' • WARNING: correction exceeds 2%' : '')
+      );
+      jQuery('#workspaceCalibrationAccept').prop('disabled', false);
+    }).catch(function(error) {
+      notify(error.response && error.response.data ? error.response.data.error : error.message, 'danger');
+    });
+  });
+  jQuery('#workspaceCalibrationAccept').off('.workspace').on('click.workspace', function() {
+    var candidate = cutterWorkspace.calibrationCandidate;
+    if (!candidate) return;
+    var key = workspaceCutterKey();
+    var accept = function(confirmLarge) {
+      return axios.post('/api/cutter-calibrations', {
+        serial_port: key.serial_port,
+        device: key.device,
+        measured_x_mm: candidate.measured_x_mm,
+        measured_y_mm: candidate.measured_y_mm,
+        accept: true,
+        enabled: true,
+        confirm_large_correction: confirmLarge
+      });
+    };
+    var promise = candidate.large_correction
+      ? UIkit.modal.confirm('This correction exceeds 2%. Confirm the measurements are accurate.').then(function() { return accept(true); })
+      : accept(false);
+    promise.then(function(response) {
+      workspaceRenderCalibration(response.data);
+      cutterWorkspace.calibrationCandidate = null;
+      jQuery('#workspaceCalibrationAccept').prop('disabled', true);
+      workspaceSchedulePreparation(false);
+      notify('Cutter calibration accepted and enabled.', 'success');
+    }).catch(function(error) {
+      if (error && error.response) notify(error.response.data.error || error.message, 'danger');
+    });
+  });
+  jQuery('#workspaceCalibrationEnabled').off('.workspace').on('change.workspace', function() {
+    var key = workspaceCutterKey();
+    var enabled = jQuery(this).is(':checked');
+    axios.put('/api/cutter-calibrations', {
+      serial_port: key.serial_port, device: key.device, enabled: enabled
+    }).then(function(response) {
+      workspaceRenderCalibration(response.data);
+      workspaceSchedulePreparation(false);
+    }).catch(function(error) {
+      notify(error.response && error.response.data ? error.response.data.error : error.message, 'danger');
+      workspaceRenderCalibration(cutterWorkspace.calibration);
+    });
+  });
   jQuery('.workspace-transform').off('.workspace').on('input.workspace change.workspace', function() {
     var item = workspaceSelectedItem();
     if (!item || cutterWorkspace.syncingDimensions) return;
@@ -1305,6 +1597,9 @@ function previewFile(filename) {
       }];
       cutterWorkspace.selectedItemIndex = 0;
       cutterWorkspace.selectedInstanceId = null;
+      cutterWorkspace.selectedProfileId = 'unprofiled';
+      cutterWorkspace.calibration = null;
+      cutterWorkspace.calibrationCandidate = null;
       workspaceRenderDesignList();
       workspacePopulateDesignSelect();
       jQuery('#workspaceDesigns, #workspaceAddDesignSelect, #workspaceAddDesign, #workspaceLayout')
@@ -1314,6 +1609,7 @@ function previewFile(filename) {
       jQuery('.workspace-cutting-aid').prop('disabled', payload.read_only);
       jQuery('#workspacePreparation').toggle(!payload.read_only);
       jQuery('#workspaceCuttingAids').toggle(!payload.read_only);
+      jQuery('#workspaceMaterialProfilePanel, #workspaceCalibrationPanel').toggle(!payload.read_only);
       jQuery('#workspaceRollWidth').prop('disabled', false);
       jQuery('#workspaceReadOnly').toggle(payload.read_only);
       jQuery('#workspaceGenerate').toggle(!payload.read_only);
@@ -1321,7 +1617,18 @@ function previewFile(filename) {
       workspaceBindControls();
       jQuery('#previewSpinner').hide(); jQuery('#cutWorkspace').show();
       workspaceRender(true);
-      if (!payload.read_only) workspaceRefreshPrepared(true);
+      if (!payload.read_only) {
+        Promise.all([
+          workspaceLoadProfiles('unprofiled', false),
+          workspaceLoadCalibration()
+        ]).then(function() {
+          workspaceRefreshPrepared(true);
+        }).catch(function(error) {
+          var message = error.response && error.response.data && error.response.data.error
+            ? error.response.data.error : (error.message || 'Could not load production settings.');
+          jQuery('#previewWarning').text(message).show();
+        });
+      }
     })
     .catch(function(error) {
       if (requestId !== previewRequestId) return;

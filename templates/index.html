@@ -338,6 +338,41 @@
                 <aside class="cut-workspace-controls">
                   <form id="workspaceData" class="uk-form-stacked">
                     <input id="workspaceFile" name="file" type="hidden">
+                    <details id="workspaceMaterialProfilePanel" class="uk-margin-small-bottom">
+                      <summary>Material profile and operator checklist</summary>
+                      <div class="uk-margin-small-top uk-grid-small" uk-grid>
+                        <select id="workspaceMaterialProfile" class="uk-select uk-form-small uk-width-1-1" aria-label="Material profile"></select>
+                        <textarea id="workspaceProfileNotes" class="uk-textarea uk-form-small uk-width-1-1" rows="2" maxlength="2000" placeholder="Material notes"></textarea>
+                        <input id="workspaceSuggestedPressure" class="uk-input uk-form-small uk-width-1-2" maxlength="100" placeholder="Panel pressure">
+                        <input id="workspaceSuggestedSpeed" class="uk-input uk-form-small uk-width-1-2" maxlength="100" placeholder="Panel speed">
+                        <div id="workspaceOperatorChecklist" class="workspace-operator-checklist uk-width-1-1 uk-text-small"></div>
+                        <div class="uk-button-group uk-width-1-1">
+                          <button id="workspaceProfileNew" class="uk-button uk-button-default uk-button-small" type="button">New</button>
+                          <button id="workspaceProfileSave" class="uk-button uk-button-primary uk-button-small" type="button">Save</button>
+                          <button id="workspaceProfileVerify" class="uk-button uk-button-default uk-button-small" type="button">Verify test</button>
+                          <button id="workspaceProfileDelete" class="uk-button uk-button-danger uk-button-small" type="button">Delete</button>
+                        </div>
+                        <div class="uk-button-group uk-width-1-1">
+                          <button id="workspaceProfileExport" class="uk-button uk-button-default uk-button-small" type="button">Export JSON</button>
+                          <button id="workspaceProfileImport" class="uk-button uk-button-default uk-button-small" type="button">Import JSON</button>
+                          <input id="workspaceProfileImportFile" type="file" accept="application/json,.json" hidden>
+                        </div>
+                        <p id="workspaceProfileStatus" class="uk-text-meta uk-width-1-1 uk-margin-remove"></p>
+                      </div>
+                    </details>
+                    <details id="workspaceCalibrationPanel" class="uk-margin-small-bottom">
+                      <summary>Cutter X/Y calibration</summary>
+                      <div class="uk-margin-small-top uk-grid-small" uk-grid>
+                        <p id="workspaceCalibrationKey" class="uk-text-meta uk-width-1-1 uk-margin-remove"></p>
+                        <label class="uk-width-1-1"><input id="workspaceCalibrationEnabled" class="uk-checkbox" type="checkbox"> Apply accepted correction</label>
+                        <input id="workspaceMeasuredX" class="uk-input uk-form-small uk-width-1-2" type="number" min="90.91" max="111.11" step="0.01" placeholder="Measured X mm">
+                        <input id="workspaceMeasuredY" class="uk-input uk-form-small uk-width-1-2" type="number" min="90.91" max="111.11" step="0.01" placeholder="Measured Y mm">
+                        <p id="workspaceCalibrationResult" class="uk-text-small uk-width-1-1 uk-margin-remove"></p>
+                        <button id="workspaceCalibrationPattern" class="uk-button uk-button-default uk-button-small uk-width-1-1" type="button">Create 100 mm calibration square</button>
+                        <button id="workspaceCalibrationCalculate" class="uk-button uk-button-default uk-button-small uk-width-1-2" type="button">Calculate</button>
+                        <button id="workspaceCalibrationAccept" class="uk-button uk-button-primary uk-button-small uk-width-1-2" type="button" disabled>Accept correction</button>
+                      </div>
+                    </details>
                     <div id="workspaceDesigns" class="workspace-designs uk-margin-small-bottom"></div>
                     <div class="uk-grid-small uk-margin-small-bottom" uk-grid>
                       <div class="uk-width-expand">
