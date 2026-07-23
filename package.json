@@ -7,7 +7,9 @@
     "test": "test"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "cross-env NODE_OPTIONS=--openssl-legacy-provider npx mix --production",
+    "test": "playwright test",
+    "test:browser": "playwright test",
     "watch": "npx mix watch"
   },
   "repository": {
@@ -22,11 +24,19 @@
   },
   "homepage": "https://github.com/henrytriplette/penplotter-webserver#readme",
   "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
+    "@playwright/test": "^1.54.1",
+    "axios": "^0.21.4",
     "browser-sync": "^2.27.5",
     "browser-sync-webpack-plugin": "^2.3.0",
+    "cross-env": "^7.0.3",
+    "dropzone": "^5.7.1",
+    "jquery": "^3.6.0",
     "laravel-mix": "^6.0.27",
     "resolve-url-loader": "^4.0.0",
     "sass": "^1.37.5",
-    "sass-loader": "^12.1.0"
+    "sass-loader": "^12.1.0",
+    "socket.io-client": "^3.1.3",
+    "uikit": "^3.7.2"
   }
 }
