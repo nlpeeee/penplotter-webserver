@@ -310,5 +310,42 @@ footer
   vector-effect: non-scaling-stroke
   opacity: 0.75
 
+.workspace-designs
+  display: grid
+  gap: 5px
+
+.workspace-design-row
+  display: grid
+  grid-template-columns: minmax(0, 1fr) 62px 28px
+  gap: 5px
+  align-items: center
+  padding: 5px
+  border: 1px solid #56616b
+  cursor: pointer
+
+  &.selected
+    border-color: #1e87f0
+    background: rgba(30, 135, 240, 0.12)
+
+.workspace-design-name
+  overflow: hidden
+  text-overflow: ellipsis
+  white-space: nowrap
+
+#workspaceInstancesLayer rect
+  fill: transparent
+  stroke: transparent
+  stroke-width: 0.7
+  vector-effect: non-scaling-stroke
+  cursor: move
+
+  &.selected
+    stroke: #38bdf8
+    stroke-dasharray: 3 2
+
+  &.collision
+    stroke: #ef4444
+    fill: rgba(239, 68, 68, 0.08)
+
 // Interactive cutter workspace lives in static/css/main.css because this
 // legacy Sass source is not compiled during Pi deployments.

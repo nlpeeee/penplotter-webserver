@@ -516,7 +516,8 @@ var cutterWorkspace = {
   payload: null, filename: '', view: null, metadata: null,
   animationFrame: null, animationProgress: 1, animationElements: [],
   renderedPaths: [], renderedTravels: [], pointer: null, syncingDimensions: false,
-  serverPreview: null, preparationTimer: null, preparationRequestId: 0
+  serverPreview: null, preparationTimer: null, preparationRequestId: 0,
+  manifestItems: [], selectedItemIndex: 0, selectedInstanceId: null
 };
 
 function workspaceNumber(selector, fallback) {
@@ -575,18 +576,38 @@ function workspaceTransformedPaths() {
 }
 
 function workspaceRequestData() {
+  var selected = cutterWorkspace.manifestItems[cutterWorkspace.selectedItemIndex] || {};
   return {
     manifest_version: 1,
     filename: cutterWorkspace.filename,
+    roll_width_mm: workspaceNumber('#workspaceRollWidth', 1200),
+    items: cutterWorkspace.manifestItems.map(function(item) {
+      return {
+        filename: item.filename,
+        target_width_mm: item.targetWidth,
+        target_height_mm: item.targetHeight,
+        rotation: item.rotation || 0,
+        mirror_x: !!item.mirrorX,
+        mirror_y: !!item.mirrorY,
+        copies: item.copies || 1,
+        placements: item.placements || []
+      };
+    }),
     transform: {
-      target_width_mm: workspaceNumber('#workspaceWidth', cutterWorkspace.payload.width_mm),
-      target_height_mm: workspaceNumber('#workspaceHeight', cutterWorkspace.payload.height_mm),
+      target_width_mm: selected.targetWidth || workspaceNumber('#workspaceWidth', cutterWorkspace.payload.width_mm),
+      target_height_mm: selected.targetHeight || workspaceNumber('#workspaceHeight', cutterWorkspace.payload.height_mm),
       roll_width_mm: workspaceNumber('#workspaceRollWidth', 1200),
-      offset_x_mm: workspaceNumber('#workspaceOffsetX', 0),
-      offset_y_mm: workspaceNumber('#workspaceOffsetY', 0),
-      rotation: parseInt(jQuery('#workspaceRotation').val(), 10) || 0,
-      mirror_x: jQuery('#workspaceMirrorX').is(':checked'),
-      mirror_y: jQuery('#workspaceMirrorY').is(':checked')
+      offset_x_mm: 0,
+      offset_y_mm: 0,
+      rotation: selected.rotation || 0,
+      mirror_x: !!selected.mirrorX,
+      mirror_y: !!selected.mirrorY
+    },
+    layout: {
+      automatic: jQuery('#workspaceAutoLayout').is(':checked'),
+      edge_margin_mm: workspaceNumber('#workspaceEdgeMargin', 5),
+      spacing_mm: workspaceNumber('#workspaceCopySpacing', 5),
+      allow_rotation: jQuery('#workspaceAutoRotate').is(':checked')
     },
     preparation: {
       enabled: jQuery('#workspacePreparationEnabled').is(':checked'),
@@ -599,6 +620,95 @@ function workspaceRequestData() {
       simplify_tolerance_mm: workspaceNumber('#workspaceSimplifyTolerance', 0.05)
     }
   };
+}
+
+function workspaceEscape(value) {
+  return jQuery('<div>').text(value == null ? '' : String(value)).html();
+}
+
+function workspaceSelectedItem() {
+  return cutterWorkspace.manifestItems[cutterWorkspace.selectedItemIndex] || null;
+}
+
+function workspaceRenderDesignList() {
+  var html = '';
+  cutterWorkspace.manifestItems.forEach(function(item, index) {
+    html += '<div class="workspace-design-row ' + (index === cutterWorkspace.selectedItemIndex ? 'selected' : '') +
+      '" data-item-index="' + index + '">' +
+      '<span class="workspace-design-name" title="' + workspaceEscape(item.filename) + '">' + workspaceEscape(item.filename) + '</span>' +
+      '<input class="uk-input uk-form-small workspace-copy-count" data-item-index="' + index +
+      '" type="number" min="1" max="500" value="' + item.copies + '" aria-label="Copy count">' +
+      '<button class="uk-button uk-button-danger uk-button-small workspace-remove-design" data-item-index="' + index +
+      '" type="button" title="Remove design"' + (cutterWorkspace.manifestItems.length === 1 ? ' disabled' : '') + '>×</button></div>';
+  });
+  jQuery('#workspaceDesigns').html(html);
+}
+
+function workspacePopulateDesignSelect() {
+  var names = [];
+  jQuery('.previewFile').each(function() {
+    var name = jQuery(this).data('filename');
+    if (name && String(name).toLowerCase().endsWith('.svg') && names.indexOf(name) < 0) names.push(name);
+  });
+  jQuery('#workspaceAddDesignSelect').html(names.map(function(name) {
+    return '<option value="' + workspaceEscape(name) + '">' + workspaceEscape(name) + '</option>';
+  }).join(''));
+}
+
+function workspaceSyncControlsFromItem() {
+  var item = workspaceSelectedItem();
+  if (!item) return;
+  cutterWorkspace.syncingDimensions = true;
+  jQuery('#workspaceWidth').val(Number(item.targetWidth).toFixed(1));
+  jQuery('#workspaceHeight').val(Number(item.targetHeight).toFixed(1));
+  jQuery('#workspaceRotation').val(String(item.rotation || 0));
+  jQuery('#workspaceMirrorX').prop('checked', !!item.mirrorX);
+  jQuery('#workspaceMirrorY').prop('checked', !!item.mirrorY);
+  cutterWorkspace.syncingDimensions = false;
+  workspaceSyncPlacementControls();
+  workspaceRenderDesignList();
+}
+
+function workspaceSelectedPlacement() {
+  if (!cutterWorkspace.serverPreview || !cutterWorkspace.serverPreview.instances) return null;
+  return cutterWorkspace.serverPreview.instances.find(function(instance) {
+    return instance.instance_id === cutterWorkspace.selectedInstanceId;
+  }) || null;
+}
+
+function workspaceSyncPlacementControls() {
+  var placement = workspaceSelectedPlacement();
+  var automatic = jQuery('#workspaceAutoLayout').is(':checked');
+  jQuery('#workspaceOffsetX, #workspaceOffsetY').prop('disabled', automatic || !placement);
+  if (placement) {
+    jQuery('#workspaceOffsetX').val(Number(placement.x).toFixed(1));
+    jQuery('#workspaceOffsetY').val(Number(placement.y).toFixed(1));
+  }
+}
+
+function workspaceCaptureManualPlacements() {
+  if (!cutterWorkspace.serverPreview || !cutterWorkspace.serverPreview.instances) return;
+  cutterWorkspace.manifestItems.forEach(function(item) { item.placements = []; });
+  cutterWorkspace.serverPreview.instances.forEach(function(instance) {
+    var item = cutterWorkspace.manifestItems[instance.item_index];
+    item.placements[instance.copy_index] = {
+      x_mm: instance.x, y_mm: instance.y, rotation: instance.rotation
+    };
+  });
+}
+
+function workspaceUpdateSelectedPlacement(x, y) {
+  var instance = workspaceSelectedPlacement();
+  if (!instance && cutterWorkspace.pointer && cutterWorkspace.pointer.instance) {
+    instance = cutterWorkspace.pointer.instance;
+  }
+  if (!instance) return;
+  var item = cutterWorkspace.manifestItems[instance.item_index];
+  if (!item.placements[instance.copy_index]) {
+    item.placements[instance.copy_index] = { x_mm: instance.x, y_mm: instance.y, rotation: instance.rotation };
+  }
+  if (x != null) item.placements[instance.copy_index].x_mm = Math.max(0, x);
+  if (y != null) item.placements[instance.copy_index].y_mm = Math.max(0, y);
 }
 
 function workspaceStatsHtml(preview) {
@@ -615,6 +725,9 @@ function workspaceStatsHtml(preview) {
 
 function workspaceApplyServerPreview(preview, resetView) {
   cutterWorkspace.serverPreview = preview;
+  if (!cutterWorkspace.selectedInstanceId && preview.instances && preview.instances.length) {
+    cutterWorkspace.selectedInstanceId = preview.instances[0].instance_id;
+  }
   jQuery('#workspacePreparing').hide();
   jQuery('#workspacePreflightStats').html(workspaceStatsHtml(preview)).show();
   var warnings = (preview.warnings || []).map(function(item) {
@@ -624,6 +737,7 @@ function workspaceApplyServerPreview(preview, resetView) {
   if (jQuery('#workspaceMerge').is(':checked') || jQuery('#workspaceSimplify').is(':checked')) {
     jQuery('#workspaceShowOriginal').prop('checked', true);
   }
+  workspaceSyncPlacementControls();
   workspaceRender(resetView);
 }
 
@@ -726,10 +840,13 @@ function workspaceRender(resetView) {
   var rollWidth = workspaceNumber('#workspaceRollWidth', 1200);
   var rollLength = Math.max(bounds.maxY + 20, 20);
   var out = bounds.minX < -0.0001 || bounds.minY < -0.0001 || bounds.maxX > rollWidth + 0.0001 || bounds.maxY > 20000;
+  var collisions = cutterWorkspace.serverPreview
+    && (cutterWorkspace.serverPreview.collisions || []).length > 0;
+  var serverInvalid = cutterWorkspace.serverPreview && cutterWorkspace.serverPreview.valid === false;
   cutterWorkspace.metadata = { bounds: bounds, rollWidth: rollWidth, rollLength: rollLength, outOfBounds: out };
 
   jQuery('#workspaceRoll').attr({ width: rollWidth, height: rollLength });
-  var cuts = '', travels = '', markers = '', original = '';
+  var cuts = '', travels = '', markers = '', original = '', instances = '';
   var travelPaths = workspaceTravelPaths(paths);
   cutterWorkspace.renderedPaths = paths;
   cutterWorkspace.renderedTravels = travelPaths;
@@ -745,20 +862,41 @@ function workspaceRender(resetView) {
       original += '<path d="' + workspacePathD(path) + '"/>';
     });
   }
+  if (cutterWorkspace.serverPreview && cutterWorkspace.serverPreview.instances) {
+    var collisionIds = cutterWorkspace.serverPreview.collisions || [];
+    cutterWorkspace.serverPreview.instances.forEach(function(instance) {
+      var classes = [];
+      if (instance.instance_id === cutterWorkspace.selectedInstanceId) classes.push('selected');
+      if (collisionIds.indexOf(instance.instance_id) >= 0) classes.push('collision');
+      instances += '<rect class="' + classes.join(' ') + '" data-instance-id="' + instance.instance_id +
+        '" x="' + instance.x + '" y="' + instance.y + '" width="' + instance.width +
+        '" height="' + instance.height + '"/>';
+    });
+  }
   var first = paths[0][0], lastPath = paths[paths.length - 1], last = lastPath[lastPath.length - 1];
   markers += '<circle cx="' + first[0] + '" cy="' + first[1] + '" r="1.8" fill="#16a34a" stroke="#fff" stroke-width="0.4"/>';
   markers += '<circle cx="' + last[0] + '" cy="' + last[1] + '" r="1.8" fill="#111827" stroke="#fff" stroke-width="0.4"/>';
   jQuery('#workspaceCutsLayer').html(cuts).toggleClass('out-of-bounds', out);
   jQuery('#workspaceOriginalLayer').html(original);
+  jQuery('#workspaceInstancesLayer').html(instances);
   jQuery('#workspaceTravelsLayer').html(travels).toggle(jQuery('#workspaceTravels').is(':checked'));
   jQuery('#workspaceMarkersLayer').html(markers);
+  var copiesLabel = cutterWorkspace.serverPreview && cutterWorkspace.serverPreview.instances
+    ? ' • ' + cutterWorkspace.serverPreview.instances.length + ' arranged cop' +
+      (cutterWorkspace.serverPreview.instances.length === 1 ? 'y' : 'ies')
+    : '';
   jQuery('#previewInfo').text(
     paths.length + (paths.length === 1 ? ' cut path • ' : ' cut paths • ') +
-    (bounds.maxX - bounds.minX).toFixed(1) + ' × ' + (bounds.maxY - bounds.minY).toFixed(1) + ' mm • roll length ' + rollLength.toFixed(1) + ' mm'
+    (bounds.maxX - bounds.minX).toFixed(1) + ' × ' + (bounds.maxY - bounds.minY).toFixed(1) +
+    ' mm • roll length ' + rollLength.toFixed(1) + ' mm' + copiesLabel
   );
-  jQuery('#workspaceBoundsError').toggle(out).text(out ? 'The red cut path is outside the loaded roll. Move, rotate, or scale it before generating HPGL.' : '');
+  var layoutError = '';
+  if (out) layoutError = 'The red cut path is outside the loaded roll. Move, rotate, or scale it before generating HPGL.';
+  else if (collisions) layoutError = 'Highlighted copies overlap. Move them apart or regenerate the automatic layout before generating HPGL.';
+  else if (serverInvalid) layoutError = 'The prepared workspace is not valid for HPGL generation.';
+  jQuery('#workspaceBoundsError').toggle(!!layoutError).text(layoutError);
   jQuery('#workspaceGenerate').prop(
-    'disabled', out || cutterWorkspace.payload.read_only
+    'disabled', out || serverInvalid || cutterWorkspace.payload.read_only
     || (!cutterWorkspace.payload.read_only && !cutterWorkspace.serverPreview)
   );
   localStorage.setItem('pcutRollWidthMm', rollWidth);
@@ -888,17 +1026,90 @@ function workspaceClientPoint(event) {
 
 function workspaceBindControls() {
   jQuery('.workspace-transform').off('.workspace').on('input.workspace change.workspace', function() {
-    if (this.id === 'workspaceWidth' && !cutterWorkspace.syncingDimensions && cutterWorkspace.payload && !cutterWorkspace.payload.read_only) {
+    var item = workspaceSelectedItem();
+    if (!item || cutterWorkspace.syncingDimensions) return;
+    if (this.id === 'workspaceWidth') {
       cutterWorkspace.syncingDimensions = true;
-      jQuery('#workspaceHeight').val((workspaceNumber('#workspaceWidth', 1) / (cutterWorkspace.payload.width_mm / cutterWorkspace.payload.height_mm)).toFixed(1));
+      item.targetWidth = workspaceNumber('#workspaceWidth', item.targetWidth);
+      item.targetHeight = item.targetWidth / (item.naturalWidth / item.naturalHeight);
+      jQuery('#workspaceHeight').val(item.targetHeight.toFixed(1));
       cutterWorkspace.syncingDimensions = false;
-    } else if (this.id === 'workspaceHeight' && !cutterWorkspace.syncingDimensions && cutterWorkspace.payload && !cutterWorkspace.payload.read_only) {
+    } else if (this.id === 'workspaceHeight') {
       cutterWorkspace.syncingDimensions = true;
-      jQuery('#workspaceWidth').val((workspaceNumber('#workspaceHeight', 1) * (cutterWorkspace.payload.width_mm / cutterWorkspace.payload.height_mm)).toFixed(1));
+      item.targetHeight = workspaceNumber('#workspaceHeight', item.targetHeight);
+      item.targetWidth = item.targetHeight * (item.naturalWidth / item.naturalHeight);
+      jQuery('#workspaceWidth').val(item.targetWidth.toFixed(1));
       cutterWorkspace.syncingDimensions = false;
+    } else if (this.id === 'workspaceRotation') {
+      item.rotation = parseInt(jQuery('#workspaceRotation').val(), 10) || 0;
+    } else if (this.id === 'workspaceMirrorX') {
+      item.mirrorX = jQuery('#workspaceMirrorX').is(':checked');
+    } else if (this.id === 'workspaceMirrorY') {
+      item.mirrorY = jQuery('#workspaceMirrorY').is(':checked');
+    } else if (this.id === 'workspaceOffsetX' || this.id === 'workspaceOffsetY') {
+      if (!jQuery('#workspaceAutoLayout').is(':checked')) {
+        workspaceUpdateSelectedPlacement(
+          workspaceNumber('#workspaceOffsetX', 0), workspaceNumber('#workspaceOffsetY', 0)
+        );
+      }
     }
     workspaceRender(false);
     workspaceSchedulePreparation(false);
+  });
+  jQuery('.workspace-layout').off('.workspace').on('input.workspace change.workspace', function() {
+    if (this.id === 'workspaceAutoLayout' && !jQuery(this).is(':checked')) {
+      workspaceCaptureManualPlacements();
+    }
+    workspaceSyncPlacementControls();
+    workspaceSchedulePreparation(false);
+  });
+  jQuery('#workspaceDesigns').off('.workspace')
+    .on('click.workspace', '.workspace-design-row', function(event) {
+      if (jQuery(event.target).is('input,button')) return;
+      cutterWorkspace.selectedItemIndex = parseInt(jQuery(this).data('item-index'), 10);
+      var first = cutterWorkspace.serverPreview && cutterWorkspace.serverPreview.instances.find(function(instance) {
+        return instance.item_index === cutterWorkspace.selectedItemIndex;
+      });
+      cutterWorkspace.selectedInstanceId = first ? first.instance_id : null;
+      workspaceSyncControlsFromItem();
+      workspaceRender(false);
+    })
+    .on('change.workspace', '.workspace-copy-count', function() {
+      var index = parseInt(jQuery(this).data('item-index'), 10);
+      cutterWorkspace.manifestItems[index].copies = Math.max(1, Math.min(500, parseInt(this.value, 10) || 1));
+      cutterWorkspace.manifestItems[index].placements = [];
+      jQuery('#workspaceAutoLayout').prop('checked', true);
+      workspaceRenderDesignList();
+      workspaceSchedulePreparation(false);
+    })
+    .on('click.workspace', '.workspace-remove-design', function(event) {
+      event.stopPropagation();
+      if (cutterWorkspace.manifestItems.length === 1) return;
+      var index = parseInt(jQuery(this).data('item-index'), 10);
+      cutterWorkspace.manifestItems.splice(index, 1);
+      cutterWorkspace.selectedItemIndex = Math.max(0, Math.min(cutterWorkspace.selectedItemIndex, cutterWorkspace.manifestItems.length - 1));
+      cutterWorkspace.selectedInstanceId = null;
+      workspaceSyncControlsFromItem();
+      workspaceSchedulePreparation(false);
+    });
+  jQuery('#workspaceAddDesign').off('.workspace').on('click.workspace', function() {
+    var filename = jQuery('#workspaceAddDesignSelect').val();
+    if (!filename) return;
+    axios.get('/cut_workspace/' + encodeURIComponent(filename), { headers: { 'Cache-Control': 'no-cache' } })
+      .then(function(response) {
+        var payload = response.data;
+        cutterWorkspace.manifestItems.push({
+          filename: filename,
+          naturalWidth: payload.width_mm, naturalHeight: payload.height_mm,
+          targetWidth: payload.width_mm, targetHeight: payload.height_mm,
+          rotation: 0, mirrorX: false, mirrorY: false, copies: 1, placements: []
+        });
+        cutterWorkspace.selectedItemIndex = cutterWorkspace.manifestItems.length - 1;
+        cutterWorkspace.selectedInstanceId = null;
+        jQuery('#workspaceAutoLayout').prop('checked', true);
+        workspaceSyncControlsFromItem();
+        workspaceSchedulePreparation(false);
+      });
   });
   jQuery('.workspace-preparation').off('.workspace').on('input.workspace change.workspace', function() {
     workspaceRender(false);
@@ -926,11 +1137,23 @@ function workspaceBindControls() {
   }).on('pointerdown.workspace', function(event) {
     if (!cutterWorkspace.view) return;
     var point = workspaceClientPoint(event.originalEvent);
-    var design = !cutterWorkspace.payload.read_only && jQuery(event.target).closest('#workspaceCutsLayer').length > 0;
+    var instanceId = jQuery(event.target).data('instance-id');
+    var design = !cutterWorkspace.payload.read_only && !!instanceId;
+    if (design) {
+      cutterWorkspace.selectedInstanceId = instanceId;
+      var selectedInstance = workspaceSelectedPlacement();
+      if (selectedInstance) cutterWorkspace.selectedItemIndex = selectedInstance.item_index;
+      if (jQuery('#workspaceAutoLayout').is(':checked')) {
+        workspaceCaptureManualPlacements();
+        jQuery('#workspaceAutoLayout').prop('checked', false);
+      }
+      workspaceSyncControlsFromItem();
+    }
     cutterWorkspace.pointer = {
       mode: design ? 'design' : 'pan', point: point,
       view: Object.assign({}, cutterWorkspace.view),
-      offsetX: workspaceNumber('#workspaceOffsetX', 0), offsetY: workspaceNumber('#workspaceOffsetY', 0)
+      offsetX: workspaceNumber('#workspaceOffsetX', 0), offsetY: workspaceNumber('#workspaceOffsetY', 0),
+      instance: design ? workspaceSelectedPlacement() : null
     };
     this.setPointerCapture(event.originalEvent.pointerId);
     svg.addClass('dragging');
@@ -938,10 +1161,12 @@ function workspaceBindControls() {
     if (!cutterWorkspace.pointer) return;
     var point = workspaceClientPoint(event.originalEvent), start = cutterWorkspace.pointer;
     if (start.mode === 'design') {
-      jQuery('#workspaceOffsetX').val((start.offsetX + point.x - start.point.x).toFixed(1));
-      jQuery('#workspaceOffsetY').val((start.offsetY + point.y - start.point.y).toFixed(1));
+      var nextX = start.offsetX + point.x - start.point.x;
+      var nextY = start.offsetY + point.y - start.point.y;
+      jQuery('#workspaceOffsetX').val(nextX.toFixed(1));
+      jQuery('#workspaceOffsetY').val(nextY.toFixed(1));
+      workspaceUpdateSelectedPlacement(nextX, nextY);
       cutterWorkspace.serverPreview = null;
-      workspaceRender(false);
     } else {
       workspaceSetView({
         x: start.view.x - (point.x - start.point.x), y: start.view.y - (point.y - start.point.y),
@@ -957,7 +1182,8 @@ function workspaceBindControls() {
 
 function workspaceGenerateHpgl() {
   if (!cutterWorkspace.payload || cutterWorkspace.payload.read_only
-      || cutterWorkspace.metadata.outOfBounds || !cutterWorkspace.serverPreview) return;
+      || cutterWorkspace.metadata.outOfBounds || !cutterWorkspace.serverPreview
+      || cutterWorkspace.serverPreview.valid === false) return;
   var button = jQuery('#workspaceGenerate');
   button.prop('disabled', true).text('Generating…');
   var requestData = workspaceRequestData();
@@ -1004,6 +1230,21 @@ function previewFile(filename) {
       jQuery('#workspacePreparationEnabled, #workspaceRemoveDuplicates, #workspaceInsideFirst, #workspaceMinimizeTravel').prop('checked', true);
       jQuery('#workspaceMerge, #workspaceSimplify, #workspaceShowOriginal').prop('checked', false);
       jQuery('#workspaceMergeTolerance, #workspaceSimplifyTolerance').val('0.05');
+      jQuery('#workspaceAutoLayout').prop('checked', true);
+      jQuery('#workspaceAutoRotate').prop('checked', false);
+      jQuery('#workspaceEdgeMargin, #workspaceCopySpacing').val('5');
+      cutterWorkspace.manifestItems = [{
+        filename: filename,
+        naturalWidth: payload.width_mm, naturalHeight: payload.height_mm,
+        targetWidth: payload.width_mm, targetHeight: payload.height_mm,
+        rotation: 0, mirrorX: false, mirrorY: false, copies: 1, placements: []
+      }];
+      cutterWorkspace.selectedItemIndex = 0;
+      cutterWorkspace.selectedInstanceId = null;
+      workspaceRenderDesignList();
+      workspacePopulateDesignSelect();
+      jQuery('#workspaceDesigns, #workspaceAddDesignSelect, #workspaceAddDesign, #workspaceLayout')
+        .toggle(!payload.read_only);
       jQuery('.workspace-transform').prop('disabled', payload.read_only);
       jQuery('.workspace-preparation').prop('disabled', payload.read_only);
       jQuery('#workspacePreparation').toggle(!payload.read_only);

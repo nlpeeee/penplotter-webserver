@@ -231,35 +231,62 @@ def cut_workspace(filename):
 
 
 def _workspace_svg_request(data):
-    """Validate a browser workspace request without accepting client geometry."""
-    filename = data.get('filename', '')
-    safe_filename = secure_filename(filename)
-    if not safe_filename or safe_filename != filename or not safe_filename.lower().endswith('.svg'):
-        raise workspace.WorkspaceError('Invalid SVG filename.')
-    filepath = os.path.join(app.config['UPLOAD_PATH'], safe_filename)
-    if not os.path.isfile(filepath):
-        raise FileNotFoundError('The selected SVG file does not exist.')
-    transform = workspace.parse_transform(data.get('transform') or data)
+    """Validate a browser manifest without accepting client-supplied geometry."""
+    raw_items = data.get('items')
+    if raw_items is None:
+        raw_items = [{
+            'filename': data.get('filename', ''),
+            **(data.get('transform') or data),
+            'copies': 1,
+        }]
+    if not isinstance(raw_items, list) or not raw_items or len(raw_items) > 20:
+        raise workspace.WorkspaceError('A workspace must contain between 1 and 20 SVG designs.')
+    roll_width = workspace._finite_number(
+        data.get('roll_width_mm', (data.get('transform') or {}).get('roll_width_mm', 1200)),
+        'Roll width',
+    )
+    items = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            raise workspace.WorkspaceError('Every workspace design must be an object.')
+        filename = raw_item.get('filename', '')
+        safe_filename = secure_filename(filename)
+        if not safe_filename or safe_filename != filename or not safe_filename.lower().endswith('.svg'):
+            raise workspace.WorkspaceError('Invalid SVG filename.')
+        filepath = os.path.join(app.config['UPLOAD_PATH'], safe_filename)
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError('The selected SVG file does not exist: ' + safe_filename)
+        values = dict(raw_item)
+        values['roll_width_mm'] = roll_width
+        values.setdefault('offset_x_mm', 0)
+        values.setdefault('offset_y_mm', 0)
+        items.append({
+            'filename': safe_filename,
+            'filepath': filepath,
+            'transform': workspace.parse_transform(values),
+            'copies': raw_item.get('copies', 1),
+            'placements': raw_item.get('placements') or [],
+        })
     preparation = workspace.parse_preparation(data.get('preparation') or {})
-    return safe_filename, filepath, transform, preparation
+    layout = workspace.parse_layout(data.get('layout') or {})
+    return items, roll_width, layout, preparation
 
 
 @app.route('/api/workspace/preview', methods=['POST'])
 def workspace_preview_api():
     data = request.get_json(silent=True) or {}
     try:
-        filename, filepath, transform, preparation = _workspace_svg_request(data)
-        _paths, metadata = workspace.build_svg_preview(filepath, transform, preparation)
+        items, roll_width, layout, preparation = _workspace_svg_request(data)
+        _paths, metadata = workspace.build_manifest_preview(
+            items, roll_width, layout, preparation
+        )
     except FileNotFoundError as exc:
         return jsonify({'error': str(exc)}), 404
     except workspace.WorkspaceError as exc:
         return jsonify({'error': str(exc)}), 422
     metadata.update({
         'manifest_version': 1,
-        'filename': filename,
-        'source_type': 'svg',
-        'read_only': False,
-        'valid': not metadata['out_of_bounds'],
+        'filename': items[0]['filename'],
     })
     response = jsonify(metadata)
     response.headers['Cache-Control'] = 'no-store'
@@ -270,11 +297,13 @@ def workspace_preview_api():
 def workspace_generate_api():
     data = request.get_json(silent=True) or {}
     try:
-        filename, filepath, transform, preparation = _workspace_svg_request(data)
-        output, metadata = workspace.convert_svg(
-            os.path.abspath(filepath),
-            transform,
+        items, roll_width, layout, preparation = _workspace_svg_request(data)
+        output, metadata = workspace.convert_manifest(
+            items,
+            roll_width,
+            layout,
             preparation,
+            os.path.abspath(app.config['UPLOAD_PATH']),
             expected_geometry_hash=data.get('geometry_hash'),
         )
     except FileNotFoundError as exc:

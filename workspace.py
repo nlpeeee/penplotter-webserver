@@ -49,6 +49,14 @@ class Preparation:
     simplify_tolerance_mm: float = 0.05
 
 
+@dataclass(frozen=True)
+class Layout:
+    automatic: bool = True
+    edge_margin_mm: float = 5.0
+    spacing_mm: float = 5.0
+    allow_rotation: bool = False
+
+
 def _bounds(paths: Sequence[Sequence[Point]]) -> Tuple[float, float, float, float]:
     points = [point for path in paths for point in path]
     if not points:
@@ -260,6 +268,23 @@ def parse_preparation(values=None) -> Preparation:
         merge_tolerance_mm=merge_tolerance,
         simplify_enabled=_truthy(values.get("simplify_enabled", False)),
         simplify_tolerance_mm=simplify_tolerance,
+    )
+
+
+def parse_layout(values=None) -> Layout:
+    values = values or {}
+    margin = _finite_number(values.get("edge_margin_mm", 5), "Edge margin")
+    spacing = _finite_number(values.get("spacing_mm", 5), "Copy spacing")
+    if not 0 <= margin <= 100:
+        raise WorkspaceError("Edge margin must be between 0 and 100 mm.")
+    if not 0 <= spacing <= 100:
+        raise WorkspaceError("Copy spacing must be between 0 and 100 mm.")
+    return Layout(
+        automatic=not str(values.get("automatic", "true")).lower()
+        in {"0", "false", "no", "off"},
+        edge_margin_mm=margin,
+        spacing_mm=spacing,
+        allow_rotation=_truthy(values.get("allow_rotation", False)),
     )
 
 
@@ -602,6 +627,241 @@ def build_svg_preview(filename: str, transform: Transform, preparation: Preparat
     return prepared, metadata
 
 
+def _rotate_copy(paths: Sequence[Sequence[Point]], rotation: int) -> Tuple[List[Path], float, float]:
+    normalised, width, height = _normalise(paths)
+    if rotation == 90:
+        return [[(height - y, x) for x, y in path] for path in normalised], height, width
+    return normalised, width, height
+
+
+def _translated(paths: Sequence[Sequence[Point]], x: float, y: float) -> List[Path]:
+    return [[(px + x, py + y) for px, py in path] for path in paths]
+
+
+def _rectangles_overlap(left, right) -> bool:
+    epsilon = 1e-6
+    return (
+        left["x"] < right["x"] + right["width"] - epsilon
+        and right["x"] < left["x"] + left["width"] - epsilon
+        and left["y"] < right["y"] + right["height"] - epsilon
+        and right["y"] < left["y"] + left["height"] - epsilon
+    )
+
+
+def build_manifest_preview(
+    items,
+    roll_width_mm: float,
+    layout: Layout,
+    preparation: Preparation,
+) -> Tuple[List[Path], dict]:
+    """Compose SVG copies on roll media and prepare one canonical cutter path."""
+    if not items:
+        raise WorkspaceError("At least one SVG design is required.")
+    if not 0.1 <= roll_width_mm <= MAX_ROLL_WIDTH_MM:
+        raise WorkspaceError("Roll width must be between 0.1 and 1200 mm.")
+
+    base_items = []
+    total_copies = 0
+    for item_index, item in enumerate(items):
+        copies_value = _finite_number(item.get("copies", 1), "Copy count")
+        if copies_value != int(copies_value):
+            raise WorkspaceError("Copy count must be a whole number.")
+        copies = int(copies_value)
+        if not 1 <= copies <= 500:
+            raise WorkspaceError("Each design must have between 1 and 500 copies.")
+        total_copies += copies
+        if total_copies > 500:
+            raise WorkspaceError("A workspace cannot contain more than 500 copies.")
+        source = load_svg_paths(item["filepath"])
+        transform = item["transform"]
+        base_transform = Transform(
+            target_width_mm=transform.target_width_mm,
+            target_height_mm=transform.target_height_mm,
+            roll_width_mm=MAX_ROLL_WIDTH_MM,
+            rotation=transform.rotation,
+            mirror_x=transform.mirror_x,
+            mirror_y=transform.mirror_y,
+        )
+        transformed, _metadata = transform_paths(source, base_transform)
+        transformed, width, height = _rotate_copy(transformed, 0)
+        base_items.append({
+            "item_index": item_index,
+            "filename": item["filename"],
+            "copies": copies,
+            "paths": transformed,
+            "width": width,
+            "height": height,
+            "placements": item.get("placements") or [],
+        })
+
+    instances = []
+    intended = []
+    x = layout.edge_margin_mm
+    y = layout.edge_margin_mm
+    row_height = 0.0
+    right_edge = roll_width_mm - layout.edge_margin_mm
+    for item in base_items:
+        for copy_index in range(item["copies"]):
+            extra_rotation = 0
+            paths = item["paths"]
+            width, height = item["width"], item["height"]
+            if layout.automatic:
+                remaining = right_edge - x
+                if (
+                    layout.allow_rotation and height <= remaining
+                    and (width > remaining or height < width)
+                ):
+                    paths, width, height = _rotate_copy(item["paths"], 90)
+                    extra_rotation = 90
+                if x > layout.edge_margin_mm and x + width > right_edge + 1e-6:
+                    x = layout.edge_margin_mm
+                    y += row_height + layout.spacing_mm
+                    row_height = 0.0
+                    paths, width, height = _rotate_copy(item["paths"], 0)
+                    extra_rotation = 0
+                    if layout.allow_rotation and height < width and x + height <= right_edge + 1e-6:
+                        paths, width, height = _rotate_copy(item["paths"], 90)
+                        extra_rotation = 90
+                place_x, place_y = x, y
+                x += width + layout.spacing_mm
+                row_height = max(row_height, height)
+            else:
+                if copy_index >= len(item["placements"]):
+                    raise WorkspaceError(
+                        f"Manual layout is missing placement for {item['filename']} copy {copy_index + 1}."
+                    )
+                placement = item["placements"][copy_index]
+                if not isinstance(placement, dict):
+                    raise WorkspaceError("Every manual copy placement must be an object.")
+                place_x = _finite_number(placement.get("x_mm"), "Copy X position")
+                place_y = _finite_number(placement.get("y_mm"), "Copy Y position")
+                if place_x < 0 or place_y < 0:
+                    raise WorkspaceError("Copy positions cannot be negative.")
+                extra_rotation = int(placement.get("rotation", 0))
+                if extra_rotation not in (0, 90):
+                    raise WorkspaceError("Copy layout rotation must be 0 or 90 degrees.")
+                paths, width, height = _rotate_copy(item["paths"], extra_rotation)
+
+            instance_id = f"item-{item['item_index']}-copy-{copy_index}"
+            placed = _translated(paths, place_x, place_y)
+            intended.extend(placed)
+            instances.append({
+                "instance_id": instance_id,
+                "item_index": item["item_index"],
+                "copy_index": copy_index,
+                "filename": item["filename"],
+                "x": round(place_x, 4),
+                "y": round(place_y, 4),
+                "width": round(width, 4),
+                "height": round(height, 4),
+                "rotation": extra_rotation,
+            })
+
+    collisions = set()
+    for index, instance in enumerate(instances):
+        for other in instances[index + 1:]:
+            if _rectangles_overlap(instance, other):
+                collisions.add(instance["instance_id"])
+                collisions.add(other["instance_id"])
+
+    prepared, diagnostics = prepare_paths(intended, preparation)
+    min_x, min_y, max_x, max_y = _bounds(prepared)
+    out_of_bounds = (
+        min_x < -1e-6 or min_y < -1e-6
+        or max_x > roll_width_mm + 1e-6
+        or max_y > MAX_FEED_LENGTH_MM + 1e-6
+    )
+    warnings = list(diagnostics["warnings"])
+    if collisions:
+        warnings.append({
+            "code": "layout_collisions",
+            "severity": "error",
+            "message": f"{len(collisions)} arranged copies overlap.",
+            "count": len(collisions),
+        })
+    if out_of_bounds:
+        warnings.append({
+            "code": "layout_out_of_bounds",
+            "severity": "error",
+            "message": "The arranged cut path is outside the loaded roll.",
+        })
+    roll_length = max(max_y + 20.0, 20.0)
+    diagnostics.update({
+        "manifest_version": 1,
+        "source_type": "svg",
+        "read_only": False,
+        "valid": not out_of_bounds and not collisions,
+        "out_of_bounds": out_of_bounds,
+        "width_mm": max_x - min_x,
+        "height_mm": max_y - min_y,
+        "min_x_mm": min_x,
+        "min_y_mm": min_y,
+        "max_x_mm": max_x,
+        "max_y_mm": max_y,
+        "roll_width_mm": roll_width_mm,
+        "roll_length_mm": roll_length,
+        "media_area_mm2": round(roll_width_mm * roll_length, 2),
+        "design_area_mm2": round(sum(i["width"] * i["height"] for i in instances), 2),
+        "intended_paths": _json_paths(intended),
+        "cut_paths": _json_paths(prepared),
+        "travel_paths": _json_paths(_travel_paths(prepared)),
+        "instances": instances,
+        "collisions": sorted(collisions),
+        "warnings": warnings,
+        "layout": {
+            "automatic": layout.automatic,
+            "edge_margin_mm": layout.edge_margin_mm,
+            "spacing_mm": layout.spacing_mm,
+            "allow_rotation": layout.allow_rotation,
+        },
+    })
+    return prepared, diagnostics
+
+
+def convert_manifest(
+    items,
+    roll_width_mm: float,
+    layout: Layout,
+    preparation: Preparation,
+    output_directory: str,
+    expected_geometry_hash: str | None = None,
+) -> Tuple[str, dict]:
+    paths, metadata = build_manifest_preview(items, roll_width_mm, layout, preparation)
+    if not metadata["valid"]:
+        raise WorkspaceError("The arranged workspace has collisions or is outside the loaded roll.")
+    if expected_geometry_hash and expected_geometry_hash != metadata["geometry_hash"]:
+        raise WorkspaceError("The cut geometry changed after preview. Refresh the preview and try again.")
+    stem = os.path.splitext(items[0]["filename"])[0] if len(items) == 1 else "pcp-layout"
+    output_file = os.path.join(
+        output_directory,
+        f"{stem}_{metadata['width_mm']:.1f}x{metadata['height_mm']:.1f}mm_"
+        f"{metadata['geometry_hash'][:8]}.hpgl",
+    )
+    _atomic_write_hpgl(output_file, paths)
+    return output_file, metadata
+
+
+def _atomic_write_hpgl(output_file: str, paths: Sequence[Sequence[Point]]) -> None:
+    temporary = tempfile.NamedTemporaryFile(
+        prefix=".hpgl-conversion-", suffix=".hpgl",
+        dir=os.path.dirname(output_file), delete=False
+    )
+    temporary_file = temporary.name
+    try:
+        temporary.write(hpgl_bytes(paths))
+        temporary.flush()
+        os.fsync(temporary.fileno())
+        temporary.close()
+        os.replace(temporary_file, output_file)
+    except OSError as exc:
+        raise WorkspaceError("Conversion failed: " + str(exc)) from exc
+    finally:
+        if not temporary.closed:
+            temporary.close()
+        if os.path.exists(temporary_file):
+            os.unlink(temporary_file)
+
+
 def convert_svg(
     filename: str,
     transform: Transform,
@@ -634,21 +894,5 @@ def convert_svg(
         suffix += f"_at{transform.offset_x_mm:g}x{transform.offset_y_mm:g}"
     output_file = f"{stem}_{size}{suffix}.hpgl"
 
-    temporary = tempfile.NamedTemporaryFile(
-        prefix=".hpgl-conversion-", suffix=".hpgl", dir=os.path.dirname(output_file), delete=False
-    )
-    temporary_file = temporary.name
-    try:
-        temporary.write(hpgl_bytes(transformed))
-        temporary.flush()
-        os.fsync(temporary.fileno())
-        temporary.close()
-        os.replace(temporary_file, output_file)
-    except OSError as exc:
-        raise WorkspaceError("Conversion failed: " + str(exc)) from exc
-    finally:
-        if not temporary.closed:
-            temporary.close()
-        if os.path.exists(temporary_file):
-            os.unlink(temporary_file)
+    _atomic_write_hpgl(output_file, transformed)
     return output_file, metadata

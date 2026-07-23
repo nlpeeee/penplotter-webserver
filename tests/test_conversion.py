@@ -187,6 +187,51 @@ class TestConversionEndpoint(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn('changed after preview', response.get_json()['error'])
 
+    def test_workspace_manifest_supports_mixed_designs_and_copies(self):
+        Path(self.directory.name, 'first.svg').write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="10mm">'
+            '<path d="M0 0H20V10H0Z"/></svg>'
+        )
+        Path(self.directory.name, 'second.svg').write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm">'
+            '<circle cx="5" cy="5" r="5"/></svg>'
+        )
+        request_body = {
+            'manifest_version': 1,
+            'roll_width_mm': 100,
+            'items': [
+                {
+                    'filename': 'first.svg', 'target_width_mm': 20,
+                    'target_height_mm': 10, 'copies': 2,
+                },
+                {
+                    'filename': 'second.svg', 'target_width_mm': 10,
+                    'target_height_mm': 10, 'copies': 1,
+                },
+            ],
+            'layout': {'automatic': True, 'edge_margin_mm': 5, 'spacing_mm': 5},
+            'preparation': {'enabled': False},
+        }
+        preview = self.client.post('/api/workspace/preview', json=request_body)
+        body = preview.get_json()
+        self.assertEqual(preview.status_code, 200)
+        self.assertTrue(body['valid'])
+        self.assertEqual(len(body['instances']), 3)
+        self.assertEqual(
+            [instance['filename'] for instance in body['instances']],
+            ['first.svg', 'first.svg', 'second.svg'],
+        )
+
+        request_body['geometry_hash'] = body['geometry_hash']
+        generated = self.client.post('/api/workspace/generate', json=request_body)
+        generated_body = generated.get_json()
+        self.assertEqual(generated.status_code, 200)
+        self.assertEqual(generated_body['geometry_hash'], body['geometry_hash'])
+        hpgl_paths, _warnings = workspace.load_hpgl_paths(
+            Path(self.directory.name, generated_body['filename'])
+        )
+        self.assertEqual(hpgl_paths, workspace._quantized_paths(body['cut_paths']))
+
     @patch.object(main, 'svg_geometry_dimensions', return_value=(210.0, 105.0))
     def test_dimensions_endpoint_returns_aspect_ratio(self, _dimensions):
         Path(self.directory.name, 'art.svg').write_text('<svg/>')

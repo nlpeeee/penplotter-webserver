@@ -127,5 +127,90 @@ class TestCutPreparation(unittest.TestCase):
         )
 
 
+class TestCopiesAndRollLayout(unittest.TestCase):
+    def item(self, filename, paths, width, height, copies=1, placements=None):
+        return {
+            'filename': filename,
+            'filepath': filename,
+            'transform': workspace.Transform(
+                target_width_mm=width,
+                target_height_mm=height,
+                roll_width_mm=1200,
+            ),
+            'copies': copies,
+            'placements': placements or [],
+            '_paths': paths,
+        }
+
+    def preview(self, items, roll_width=100, layout=None):
+        sources = {item['filepath']: item['_paths'] for item in items}
+        clean_items = [{key: value for key, value in item.items() if key != '_paths'} for item in items]
+        with unittest.mock.patch.object(
+            workspace, 'load_svg_paths', side_effect=lambda filename: sources[filename]
+        ):
+            return workspace.build_manifest_preview(
+                clean_items,
+                roll_width,
+                layout or workspace.Layout(),
+                workspace.Preparation(enabled=False),
+            )
+
+    def test_deterministic_rows_preserve_design_and_copy_order(self):
+        first = self.item('first.svg', RECT, 40, 20, copies=3)
+        second = self.item('second.svg', RECT, 20, 10, copies=1)
+        _paths, metadata = self.preview([first, second], roll_width=100)
+        instances = metadata['instances']
+        self.assertEqual(
+            [(item['filename'], item['copy_index']) for item in instances],
+            [('first.svg', 0), ('first.svg', 1), ('first.svg', 2), ('second.svg', 0)],
+        )
+        self.assertEqual(
+            [(item['x'], item['y']) for item in instances],
+            [(5.0, 5.0), (50.0, 5.0), (5.0, 30.0), (50.0, 30.0)],
+        )
+        self.assertAlmostEqual(metadata['roll_length_mm'], 70.0)
+        self.assertAlmostEqual(metadata['design_area_mm2'], 2600.0)
+
+    def test_manual_collisions_and_overflow_block_generation(self):
+        item = self.item(
+            'art.svg', RECT, 40, 20, copies=2,
+            placements=[
+                {'x_mm': 0, 'y_mm': 0, 'rotation': 0},
+                {'x_mm': 30, 'y_mm': 0, 'rotation': 0},
+            ],
+        )
+        _paths, metadata = self.preview(
+            [item], roll_width=60,
+            layout=workspace.Layout(automatic=False),
+        )
+        self.assertFalse(metadata['valid'])
+        self.assertEqual(len(metadata['collisions']), 2)
+        self.assertTrue(metadata['out_of_bounds'])
+        self.assertEqual(
+            {warning['code'] for warning in metadata['warnings'] if warning['severity'] == 'error'},
+            {'layout_collisions', 'layout_out_of_bounds'},
+        )
+
+    def test_auto_rotation_is_only_used_when_enabled(self):
+        item = self.item('wide.svg', RECT, 80, 40)
+        _paths, plain = self.preview([item], roll_width=70)
+        self.assertTrue(plain['out_of_bounds'])
+        _paths, rotated = self.preview(
+            [item], roll_width=70,
+            layout=workspace.Layout(allow_rotation=True),
+        )
+        self.assertTrue(rotated['valid'])
+        self.assertEqual(rotated['instances'][0]['rotation'], 90)
+        self.assertEqual(
+            (rotated['instances'][0]['width'], rotated['instances'][0]['height']),
+            (40.0, 80.0),
+        )
+
+    def test_invalid_fractional_copy_count_is_rejected(self):
+        item = self.item('art.svg', RECT, 40, 20, copies=1.5)
+        with self.assertRaisesRegex(workspace.WorkspaceError, 'whole number'):
+            self.preview([item])
+
+
 if __name__ == '__main__':
     unittest.main()

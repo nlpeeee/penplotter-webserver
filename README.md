@@ -140,6 +140,13 @@ are opt-in and can be compared with the original overlay. Generation requires
 the geometry hash returned by the exact server preview, preventing a stale
 preview from producing a different cut.
 
+The **Copies and roll layout** panel can arrange multiple uploaded SVG designs
+and copy counts in deterministic left-to-right rows. Edge margin and spacing
+default to 5 mm. Optional 90-degree rotation is explicit, and any automatic
+layout can be changed to manual positioning by dragging a copy or entering its
+X/Y position. Collisions and roll overflow are highlighted and block HPGL
+generation. Uploaded HPGL remains an exact, read-only preview.
+
 ## Running Tests
 
 ```bash
@@ -160,6 +167,7 @@ python -m unittest discover -s tests -v
 - [x] Interactive millimetre workspace and animated cut-order preview
 - [x] Immediate cancel and guarded USB serial reset controls
 - [x] Preflight diagnostics and safe cut-path optimization
+- [x] Multiple SVG copies and deterministic roll layout
 
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
