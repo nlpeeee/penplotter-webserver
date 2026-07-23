@@ -35,12 +35,15 @@
         <span id="v2PortState" class="v2-status-chip" data-state="unknown">Checking port…</span>
       </div>
       <div class="v2-status-actions">
+        <span class="v2-material-status">Material <strong id="v2MaterialProfile">Unprofiled</strong></span>
         <span id="v2QueueCount">No queued jobs</span>
         <button id="v2GlobalCancel" class="v2-button v2-button-danger v2-global-cancel stopPlot" type="button" hidden>
           CANCEL CUT
         </button>
       </div>
     </header>
+
+    <section id="v2ActiveJobCard" class="v2-active-job v2-global-job-strip" hidden aria-live="polite"></section>
 
     <main id="v2Main" class="v2-main" tabindex="-1">
       <section class="v2-view" data-view="new-cut">
@@ -52,8 +55,6 @@
           </div>
           <a class="v2-button v2-button-secondary" href="/v2/projects">Open saved project</a>
         </header>
-
-        <div id="v2ActiveJobCard" class="v2-active-job" hidden aria-live="polite"></div>
 
         <div class="v2-home-grid">
           <section class="v2-panel v2-upload-panel" aria-labelledby="v2UploadTitle">
@@ -88,6 +89,17 @@
             <a class="v2-button v2-button-secondary v2-button-block" href="/v2/settings">Connection settings</a>
           </aside>
         </div>
+
+        <section class="v2-panel v2-recent-panel" aria-labelledby="v2RecentProjectsTitle">
+          <div class="v2-panel-heading">
+            <div>
+              <h2 id="v2RecentProjectsTitle">Recent projects</h2>
+              <p>Resume a saved production workspace.</p>
+            </div>
+            <a class="v2-button v2-button-quiet" href="/v2/projects">View all projects</a>
+          </div>
+          <div id="v2RecentProjects" class="v2-recent-projects" aria-live="polite"></div>
+        </section>
 
         <section class="v2-panel v2-recent-panel" aria-labelledby="v2UploadsTitle">
           <div class="v2-panel-heading">
@@ -147,6 +159,7 @@
             <button class="v2-filter-chip" type="button" data-job-filter="transmitting">Active</button>
             <button class="v2-filter-chip" type="button" data-job-filter="completed">Completed</button>
             <button class="v2-filter-chip" type="button" data-job-filter="failed">Failed</button>
+            <button class="v2-filter-chip" type="button" data-job-filter="cancelled">Cancelled</button>
           </div>
           <div class="v2-table-scroll">
             <table class="v2-table">

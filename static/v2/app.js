@@ -366,6 +366,13 @@
     };
 
     window.workspaceSaveProject = v2WorkspaceSaveProject;
+
+    var originalRenderProfile = window.workspaceRenderProfile;
+    window.workspaceRenderProfile = function (profile) {
+      var result = originalRenderProfile(profile);
+      jQuery('#v2MaterialProfile').text(profile && profile.name ? profile.name : 'Unprofiled');
+      return result;
+    };
   }
 
   function workspaceSnapshot() {
@@ -503,6 +510,34 @@
       }).join('') || '<p class="v2-help">No material profiles.</p>');
     }).catch(function (error) {
       jQuery('#v2ProfileLibrary').html('<p class="v2-alert v2-alert-error">' + escapeHtml(apiError(error)) + '</p>');
+    });
+  }
+
+  function loadRecentProjects() {
+    if (!jQuery('#v2RecentProjects').length) return Promise.resolve();
+    return axios.get('/api/projects').then(function (response) {
+      var projects = (response.data.projects || []).filter(function (project) {
+        return !project.deleted && project.latest_revision;
+      }).slice(0, 4);
+      if (!projects.length) {
+        jQuery('#v2RecentProjects').html('<p class="v2-help">No saved projects yet.</p>');
+        return;
+      }
+      jQuery('#v2RecentProjects').html(projects.map(function (project) {
+        var thumb = '/api/projects/' + encodeURIComponent(project.id) + '/revisions/' +
+          project.latest_revision + '/thumbnail';
+        return '<article class="v2-recent-project project-card" data-project-id="' +
+          escapeHtml(project.id) + '" data-revision="' + Number(project.latest_revision) + '">' +
+          '<img src="' + thumb + '" alt="">' +
+          '<div><strong>' + escapeHtml(project.name) + '</strong><span>Revision ' +
+          Number(project.latest_revision) + (project.tags && project.tags.length
+            ? ' · ' + escapeHtml(project.tags.join(', ')) : '') + '</span></div>' +
+          '<button class="v2-button v2-button-primary project-open" type="button">Open</button></article>';
+      }).join(''));
+    }).catch(function (error) {
+      jQuery('#v2RecentProjects').html(
+        '<p class="v2-alert v2-alert-error">' + escapeHtml(apiError(error, 'Projects unavailable.')) + '</p>'
+      );
     });
   }
 
@@ -686,6 +721,7 @@
     initUpload();
     refreshUiState();
     refreshFiles();
+    loadRecentProjects();
     refreshJobHistory();
     updateConfiguration();
     loadSettings();
