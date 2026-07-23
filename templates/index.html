@@ -413,6 +413,31 @@
                         <label><input id="workspaceShowOriginal" class="uk-checkbox" type="checkbox"> Show original overlay</label>
                       </div>
                     </details>
+                    <details id="workspaceCuttingAids" class="uk-margin-small-top">
+                      <summary>Vinyl-cutting aids</summary>
+                      <div class="uk-margin-small-top uk-grid-small" uk-grid>
+                        <label class="uk-width-1-1"><input id="workspaceWeedEnabled" class="uk-checkbox workspace-cutting-aid" type="checkbox"> Add weeding geometry</label>
+                        <div class="uk-width-1-2">
+                          <label class="uk-form-label" for="workspaceWeedBorderMode">Border around</label>
+                          <select id="workspaceWeedBorderMode" class="uk-select uk-form-small workspace-cutting-aid">
+                            <option value="layout">Complete layout</option>
+                            <option value="copy">Each copy</option>
+                          </select>
+                        </div>
+                        <div class="uk-width-1-2">
+                          <label class="uk-form-label" for="workspaceWeedMargin">Border margin (mm)</label>
+                          <input id="workspaceWeedMargin" class="uk-input uk-form-small workspace-cutting-aid" type="number" min="0" max="100" step="0.1" value="5">
+                        </div>
+                        <label class="uk-width-1-2"><input id="workspaceWeedHorizontal" class="uk-checkbox workspace-cutting-aid" type="checkbox"> Horizontal weed lines</label>
+                        <label class="uk-width-1-2"><input id="workspaceWeedVertical" class="uk-checkbox workspace-cutting-aid" type="checkbox"> Vertical weed lines</label>
+                        <label class="uk-width-1-2"><input id="workspaceOvercutEnabled" class="uk-checkbox workspace-cutting-aid" type="checkbox"> Closed-path overcut</label>
+                        <input id="workspaceOvercut" class="uk-input uk-form-small uk-width-1-2 workspace-cutting-aid" type="number" min="0.01" max="10" step="0.05" value="1" aria-label="Overcut distance in millimetres">
+                        <label class="uk-width-1-2"><input id="workspaceBladeCompensation" class="uk-checkbox workspace-cutting-aid" type="checkbox"> Drag-blade compensation</label>
+                        <input id="workspaceBladeOffset" class="uk-input uk-form-small uk-width-1-2 workspace-cutting-aid" type="number" min="0.01" max="5" step="0.01" value="0.25" aria-label="Blade offset in millimetres">
+                        <label class="uk-width-1-1"><input id="workspaceShowIntended" class="uk-checkbox" type="checkbox" checked> Show intended contour overlay</label>
+                        <button id="workspaceTestPattern" class="uk-button uk-button-default uk-button-small uk-width-1-1" type="button">Create compensation test pattern</button>
+                      </div>
+                    </details>
                   </form>
                   <p id="workspaceReadOnly" class="uk-alert-primary uk-text-small" style="display:none;">HPGL preview is exact and read-only.</p>
                   <p id="previewInfo" class="uk-text-small uk-margin-small-top"></p>
@@ -434,6 +459,7 @@
                     <g id="workspaceRulers"></g>
                     <g id="workspaceOriginalLayer"></g>
                     <g id="workspaceTravelsLayer"></g>
+                    <g id="workspaceIntendedLayer"></g>
                     <g id="workspaceCutsLayer"></g>
                     <g id="workspaceInstancesLayer"></g>
                     <g id="workspaceMarkersLayer"></g>

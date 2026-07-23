@@ -57,6 +57,19 @@ class Layout:
     allow_rotation: bool = False
 
 
+@dataclass(frozen=True)
+class CuttingAids:
+    weed_enabled: bool = False
+    weed_border_mode: str = "layout"
+    weed_margin_mm: float = 5.0
+    weed_horizontal: bool = False
+    weed_vertical: bool = False
+    overcut_enabled: bool = False
+    overcut_mm: float = 1.0
+    blade_compensation_enabled: bool = False
+    blade_offset_mm: float = 0.25
+
+
 def _bounds(paths: Sequence[Sequence[Point]]) -> Tuple[float, float, float, float]:
     points = [point for path in paths for point in path]
     if not points:
@@ -285,6 +298,36 @@ def parse_layout(values=None) -> Layout:
         edge_margin_mm=margin,
         spacing_mm=spacing,
         allow_rotation=_truthy(values.get("allow_rotation", False)),
+    )
+
+
+def parse_cutting_aids(values=None) -> CuttingAids:
+    """Validate disabled-by-default vinyl-cutting aids."""
+    values = values or {}
+    border_mode = str(values.get("weed_border_mode", "layout")).lower()
+    if border_mode not in {"copy", "layout"}:
+        raise WorkspaceError("Weed border mode must be copy or layout.")
+    weed_margin = _finite_number(values.get("weed_margin_mm", 5), "Weed margin")
+    overcut = _finite_number(values.get("overcut_mm", 1), "Overcut")
+    blade_offset = _finite_number(values.get("blade_offset_mm", 0.25), "Blade offset")
+    if not 0 <= weed_margin <= 100:
+        raise WorkspaceError("Weed margin must be between 0 and 100 mm.")
+    if not 0.01 <= overcut <= 10:
+        raise WorkspaceError("Overcut must be between 0.01 and 10 mm.")
+    if not 0.01 <= blade_offset <= 5:
+        raise WorkspaceError("Blade offset must be between 0.01 and 5 mm.")
+    return CuttingAids(
+        weed_enabled=_truthy(values.get("weed_enabled", False)),
+        weed_border_mode=border_mode,
+        weed_margin_mm=weed_margin,
+        weed_horizontal=_truthy(values.get("weed_horizontal", False)),
+        weed_vertical=_truthy(values.get("weed_vertical", False)),
+        overcut_enabled=_truthy(values.get("overcut_enabled", False)),
+        overcut_mm=overcut,
+        blade_compensation_enabled=_truthy(
+            values.get("blade_compensation_enabled", False)
+        ),
+        blade_offset_mm=blade_offset,
     )
 
 
@@ -648,13 +691,284 @@ def _rectangles_overlap(left, right) -> bool:
     )
 
 
+def _rectangle_path(min_x: float, min_y: float, max_x: float, max_y: float) -> Path:
+    return [
+        (min_x, min_y), (max_x, min_y), (max_x, max_y),
+        (min_x, max_y), (min_x, min_y),
+    ]
+
+
+def _merge_intervals(intervals):
+    merged = []
+    for start, end in sorted(intervals):
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1] + 1e-6:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _free_segments(start: float, end: float, blocked) -> List[Tuple[float, float]]:
+    segments = []
+    cursor = start
+    for block_start, block_end in _merge_intervals(blocked):
+        block_start = max(start, block_start)
+        block_end = min(end, block_end)
+        if block_start > cursor + 1e-6:
+            segments.append((cursor, block_start))
+        cursor = max(cursor, block_end)
+    if end > cursor + 1e-6:
+        segments.append((cursor, end))
+    return segments
+
+
+def _gap_centres(instances, axis: str) -> List[float]:
+    leading = "x" if axis == "x" else "y"
+    size = "width" if axis == "x" else "height"
+    intervals = sorted((item[leading], item[leading] + item[size]) for item in instances)
+    centres = []
+    for index, (_start, end) in enumerate(intervals[:-1]):
+        next_start = intervals[index + 1][0]
+        if next_start > end + 1e-6:
+            centre = (end + next_start) / 2.0
+            if all(abs(centre - value) > 1e-6 for value in centres):
+                centres.append(centre)
+    return centres
+
+
+def _weed_geometry(instances, aids: CuttingAids):
+    if not aids.weed_enabled or not instances:
+        return [], [], []
+    margin = aids.weed_margin_mm
+    layout_min_x = min(item["x"] for item in instances) - margin
+    layout_min_y = min(item["y"] for item in instances) - margin
+    layout_max_x = max(item["x"] + item["width"] for item in instances) + margin
+    layout_max_y = max(item["y"] + item["height"] for item in instances) + margin
+    protected = [
+        {
+            "x": item["x"], "y": item["y"],
+            "width": item["width"], "height": item["height"],
+        }
+        for item in instances
+    ]
+    lines: List[Path] = []
+    if aids.weed_vertical:
+        for x in _gap_centres(instances, "x"):
+            blocked = [
+                (rect["y"], rect["y"] + rect["height"])
+                for rect in protected
+                if rect["x"] - 1e-6 <= x <= rect["x"] + rect["width"] + 1e-6
+            ]
+            lines.extend(
+                [[(x, start), (x, end)] for start, end in
+                 _free_segments(layout_min_y, layout_max_y, blocked)]
+            )
+    if aids.weed_horizontal:
+        for y in _gap_centres(instances, "y"):
+            blocked = [
+                (rect["x"], rect["x"] + rect["width"])
+                for rect in protected
+                if rect["y"] - 1e-6 <= y <= rect["y"] + rect["height"] + 1e-6
+            ]
+            lines.extend(
+                [[(start, y), (end, y)] for start, end in
+                 _free_segments(layout_min_x, layout_max_x, blocked)]
+            )
+
+    warnings = []
+    if aids.weed_border_mode == "copy":
+        borders = [
+            _rectangle_path(
+                item["x"] - margin,
+                item["y"] - margin,
+                item["x"] + item["width"] + margin,
+                item["y"] + item["height"] + margin,
+            )
+            for item in instances
+        ]
+        expanded = [
+            {
+                "x": item["x"] - margin,
+                "y": item["y"] - margin,
+                "width": item["width"] + 2 * margin,
+                "height": item["height"] + 2 * margin,
+            }
+            for item in instances
+        ]
+        conflicts = set()
+        for index, border in enumerate(expanded):
+            for other_index, other in enumerate(protected):
+                if index != other_index and _rectangles_overlap(border, other):
+                    conflicts.add(index)
+                    conflicts.add(other_index)
+        if conflicts:
+            warnings.append({
+                "code": "weed_border_collision",
+                "severity": "error",
+                "message": (
+                    f"{len(conflicts)} copy weed borders enter another design. "
+                    "Increase copy spacing or reduce the weed margin."
+                ),
+                "count": len(conflicts),
+            })
+    else:
+        borders = [_rectangle_path(
+            layout_min_x, layout_min_y, layout_max_x, layout_max_y
+        )]
+    return lines, borders, warnings
+
+
+def _is_closed(path: Sequence[Point]) -> bool:
+    return (
+        len(path) > 2
+        and math.hypot(path[0][0] - path[-1][0], path[0][1] - path[-1][1])
+        <= 1e-6
+    )
+
+
+def _overcut_path(path: Sequence[Point], distance: float) -> Path:
+    if not _is_closed(path) or distance <= 0:
+        return list(path)
+    output = list(path)
+    remaining = distance
+    segments = list(zip(path[:-1], path[1:]))
+    if not segments:
+        return output
+    cycles = 0
+    while remaining > 1e-9 and cycles < 100:
+        progressed = False
+        for start, end in segments:
+            length = math.hypot(end[0] - start[0], end[1] - start[1])
+            if length <= 1e-9:
+                continue
+            progressed = True
+            if remaining >= length:
+                output.append(end)
+                remaining -= length
+            else:
+                ratio = remaining / length
+                output.append((
+                    start[0] + (end[0] - start[0]) * ratio,
+                    start[1] + (end[1] - start[1]) * ratio,
+                ))
+                remaining = 0
+                break
+        if not progressed:
+            break
+        cycles += 1
+    return output
+
+
+def _unit_vector(start: Point, end: Point) -> Point:
+    length = math.hypot(end[0] - start[0], end[1] - start[1])
+    if length <= 1e-9:
+        raise WorkspaceError("Blade compensation encountered a zero-length segment.")
+    return (end[0] - start[0]) / length, (end[1] - start[1]) / length
+
+
+def _pivot_arc(vertex: Point, incoming: Point, outgoing: Point, offset: float) -> Path:
+    start_angle = math.atan2(incoming[1], incoming[0])
+    end_angle = math.atan2(outgoing[1], outgoing[0])
+    delta = (end_angle - start_angle + math.pi) % (2 * math.pi) - math.pi
+    steps = max(1, int(math.ceil(abs(delta) / math.radians(12))))
+    return [
+        (
+            vertex[0] + offset * math.cos(start_angle + delta * step / steps),
+            vertex[1] + offset * math.sin(start_angle + delta * step / steps),
+        )
+        for step in range(1, steps + 1)
+    ]
+
+
+def _blade_compensated_path(path: Sequence[Point], offset: float) -> Path:
+    points = []
+    for point in path:
+        if not points or math.hypot(
+            point[0] - points[-1][0], point[1] - points[-1][1]
+        ) > 1e-9:
+            points.append(point)
+    if len(points) < 2:
+        raise WorkspaceError("Blade compensation needs at least two distinct points.")
+    closed = _is_closed(points)
+    unique = points[:-1] if closed else points
+    if closed and len(unique) < 3:
+        raise WorkspaceError("Blade compensation needs at least three contour points.")
+    if closed:
+        directions = [
+            _unit_vector(unique[index], unique[(index + 1) % len(unique)])
+            for index in range(len(unique))
+        ]
+        first = directions[0]
+        output = [(unique[0][0] + offset * first[0], unique[0][1] + offset * first[1])]
+        for index in range(1, len(unique) + 1):
+            vertex = unique[index % len(unique)]
+            incoming = directions[(index - 1) % len(unique)]
+            outgoing = directions[index % len(unique)]
+            output.append((
+                vertex[0] + offset * incoming[0],
+                vertex[1] + offset * incoming[1],
+            ))
+            output.extend(_pivot_arc(vertex, incoming, outgoing, offset))
+        return output
+
+    directions = [
+        _unit_vector(points[index], points[index + 1])
+        for index in range(len(points) - 1)
+    ]
+    output = [(
+        points[0][0] + offset * directions[0][0],
+        points[0][1] + offset * directions[0][1],
+    )]
+    for index in range(1, len(points) - 1):
+        incoming, outgoing = directions[index - 1], directions[index]
+        output.append((
+            points[index][0] + offset * incoming[0],
+            points[index][1] + offset * incoming[1],
+        ))
+        output.extend(_pivot_arc(points[index], incoming, outgoing, offset))
+    last = directions[-1]
+    output.append((
+        points[-1][0] + offset * last[0],
+        points[-1][1] + offset * last[1],
+    ))
+    return output
+
+
+def _compensation_is_valid(
+    paths: Sequence[Sequence[Point]], allow_trailing_overcut: bool = False
+) -> bool:
+    try:
+        from shapely.geometry import LineString
+        checked = []
+        for path in paths:
+            candidate = list(path)
+            if allow_trailing_overcut and len(candidate) > 3:
+                for index in range(2, len(candidate)):
+                    if math.hypot(
+                        candidate[index][0] - candidate[0][0],
+                        candidate[index][1] - candidate[0][1],
+                    ) <= 1e-6:
+                        candidate = candidate[:index + 1]
+                        break
+            checked.append(LineString(candidate))
+        return all(line.is_valid and line.is_simple for line in checked)
+    except Exception as exc:
+        raise WorkspaceError(
+            "Could not validate the compensated carriage path: " + str(exc)
+        ) from exc
+
+
 def build_manifest_preview(
     items,
     roll_width_mm: float,
     layout: Layout,
     preparation: Preparation,
+    cutting_aids: CuttingAids | None = None,
 ) -> Tuple[List[Path], dict]:
     """Compose SVG copies on roll media and prepare one canonical cutter path."""
+    cutting_aids = cutting_aids or CuttingAids()
     if not items:
         raise WorkspaceError("At least one SVG design is required.")
     if not 0.1 <= roll_width_mm <= MAX_ROLL_WIDTH_MM:
@@ -764,14 +1078,60 @@ def build_manifest_preview(
                 collisions.add(instance["instance_id"])
                 collisions.add(other["instance_id"])
 
-    prepared, diagnostics = prepare_paths(intended, preparation)
-    min_x, min_y, max_x, max_y = _bounds(prepared)
+    artwork, diagnostics = prepare_paths(intended, preparation)
+    weed_lines, weed_borders, aid_warnings = _weed_geometry(instances, cutting_aids)
+    contour_paths = artwork + weed_lines + weed_borders
+    path_roles = (
+        ["artwork"] * len(artwork)
+        + ["weed_line"] * len(weed_lines)
+        + ["weed_border"] * len(weed_borders)
+    )
+    if cutting_aids.overcut_enabled:
+        contour_paths = [
+            _overcut_path(path, cutting_aids.overcut_mm) for path in contour_paths
+        ]
+    compensated_paths: List[Path] = []
+    compensation_valid = True
+    if cutting_aids.blade_compensation_enabled:
+        compensated_paths = [
+            _blade_compensated_path(path, cutting_aids.blade_offset_mm)
+            for path in contour_paths
+        ]
+        compensation_valid = _compensation_is_valid(
+            compensated_paths,
+            allow_trailing_overcut=cutting_aids.overcut_enabled,
+        )
+        emitted_paths = compensated_paths
+        if not compensation_valid:
+            aid_warnings.append({
+                "code": "invalid_blade_compensation",
+                "severity": "error",
+                "message": (
+                    "Blade compensation produced a self-intersecting carriage path. "
+                    "Reduce the blade offset or disable compensation."
+                ),
+            })
+    else:
+        emitted_paths = contour_paths
+    point_count = sum(len(path) for path in emitted_paths)
+    if point_count > 1_000_000:
+        raise WorkspaceError("Prepared cutting aids exceed the 1,000,000 point safety limit.")
+    min_x, min_y, max_x, max_y = _bounds(emitted_paths)
     out_of_bounds = (
         min_x < -1e-6 or min_y < -1e-6
         or max_x > roll_width_mm + 1e-6
         or max_y > MAX_FEED_LENGTH_MM + 1e-6
     )
-    warnings = list(diagnostics["warnings"])
+    warnings = list(diagnostics["warnings"]) + aid_warnings
+    if point_count > 100_000 and not any(
+        warning.get("code") == "high_point_count" for warning in warnings
+    ):
+        warnings.append({
+            "code": "high_point_count",
+            "severity": "warning",
+            "message": f"The emitted cutter path contains {point_count:,} points.",
+            "count": point_count,
+        })
     if collisions:
         warnings.append({
             "code": "layout_collisions",
@@ -785,12 +1145,14 @@ def build_manifest_preview(
             "severity": "error",
             "message": "The arranged cut path is outside the loaded roll.",
         })
+    aid_error = any(warning.get("severity") == "error" for warning in aid_warnings)
     roll_length = max(max_y + 20.0, 20.0)
+    emitted_hpgl = hpgl_bytes(emitted_paths)
     diagnostics.update({
         "manifest_version": 1,
         "source_type": "svg",
         "read_only": False,
-        "valid": not out_of_bounds and not collisions,
+        "valid": not out_of_bounds and not collisions and not aid_error,
         "out_of_bounds": out_of_bounds,
         "width_mm": max_x - min_x,
         "height_mm": max_y - min_y,
@@ -802,12 +1164,31 @@ def build_manifest_preview(
         "roll_length_mm": roll_length,
         "media_area_mm2": round(roll_width_mm * roll_length, 2),
         "design_area_mm2": round(sum(i["width"] * i["height"] for i in instances), 2),
-        "intended_paths": _json_paths(intended),
-        "cut_paths": _json_paths(prepared),
-        "travel_paths": _json_paths(_travel_paths(prepared)),
+        "original_paths": _json_paths(intended),
+        "intended_paths": _json_paths(contour_paths),
+        "compensated_paths": _json_paths(compensated_paths),
+        "weed_paths": _json_paths(weed_lines),
+        "weed_border_paths": _json_paths(weed_borders),
+        "cut_paths": _json_paths(emitted_paths),
+        "travel_paths": _json_paths(_travel_paths(emitted_paths)),
+        "path_roles": path_roles,
         "instances": instances,
         "collisions": sorted(collisions),
         "warnings": warnings,
+        "after": _path_stats(emitted_paths),
+        "geometry_hash": hashlib.sha256(emitted_hpgl).hexdigest(),
+        "cutting_aids": {
+            "weed_enabled": cutting_aids.weed_enabled,
+            "weed_border_mode": cutting_aids.weed_border_mode,
+            "weed_margin_mm": cutting_aids.weed_margin_mm,
+            "weed_horizontal": cutting_aids.weed_horizontal,
+            "weed_vertical": cutting_aids.weed_vertical,
+            "overcut_enabled": cutting_aids.overcut_enabled,
+            "overcut_mm": cutting_aids.overcut_mm,
+            "blade_compensation_enabled": cutting_aids.blade_compensation_enabled,
+            "blade_offset_mm": cutting_aids.blade_offset_mm,
+            "compensation_valid": compensation_valid,
+        },
         "layout": {
             "automatic": layout.automatic,
             "edge_margin_mm": layout.edge_margin_mm,
@@ -815,7 +1196,7 @@ def build_manifest_preview(
             "allow_rotation": layout.allow_rotation,
         },
     })
-    return prepared, diagnostics
+    return emitted_paths, diagnostics
 
 
 def convert_manifest(
@@ -824,9 +1205,12 @@ def convert_manifest(
     layout: Layout,
     preparation: Preparation,
     output_directory: str,
+    cutting_aids: CuttingAids | None = None,
     expected_geometry_hash: str | None = None,
 ) -> Tuple[str, dict]:
-    paths, metadata = build_manifest_preview(items, roll_width_mm, layout, preparation)
+    paths, metadata = build_manifest_preview(
+        items, roll_width_mm, layout, preparation, cutting_aids
+    )
     if not metadata["valid"]:
         raise WorkspaceError("The arranged workspace has collisions or is outside the loaded roll.")
     if expected_geometry_hash and expected_geometry_hash != metadata["geometry_hash"]:

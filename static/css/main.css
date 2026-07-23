@@ -347,6 +347,23 @@ footer {
   opacity: 0.75;
 }
 
+#workspaceIntendedLayer path {
+  fill: none;
+  stroke: #38bdf8;
+  stroke-width: 0.45;
+  stroke-dasharray: 2 1;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+#workspaceCutsLayer .workspace-weed-line {
+  stroke: #f59e0b;
+}
+
+#workspaceCutsLayer .workspace-weed-border {
+  stroke: #d946ef;
+}
+
 .workspace-designs {
   display: grid;
   gap: 5px;

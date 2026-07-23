@@ -269,16 +269,17 @@ def _workspace_svg_request(data):
         })
     preparation = workspace.parse_preparation(data.get('preparation') or {})
     layout = workspace.parse_layout(data.get('layout') or {})
-    return items, roll_width, layout, preparation
+    cutting_aids = workspace.parse_cutting_aids(data.get('cutting_aids') or {})
+    return items, roll_width, layout, preparation, cutting_aids
 
 
 @app.route('/api/workspace/preview', methods=['POST'])
 def workspace_preview_api():
     data = request.get_json(silent=True) or {}
     try:
-        items, roll_width, layout, preparation = _workspace_svg_request(data)
+        items, roll_width, layout, preparation, cutting_aids = _workspace_svg_request(data)
         _paths, metadata = workspace.build_manifest_preview(
-            items, roll_width, layout, preparation
+            items, roll_width, layout, preparation, cutting_aids
         )
     except FileNotFoundError as exc:
         return jsonify({'error': str(exc)}), 404
@@ -297,13 +298,14 @@ def workspace_preview_api():
 def workspace_generate_api():
     data = request.get_json(silent=True) or {}
     try:
-        items, roll_width, layout, preparation = _workspace_svg_request(data)
+        items, roll_width, layout, preparation, cutting_aids = _workspace_svg_request(data)
         output, metadata = workspace.convert_manifest(
             items,
             roll_width,
             layout,
             preparation,
             os.path.abspath(app.config['UPLOAD_PATH']),
+            cutting_aids=cutting_aids,
             expected_geometry_hash=data.get('geometry_hash'),
         )
     except FileNotFoundError as exc:
@@ -323,6 +325,43 @@ def workspace_generate_api():
         'geometry_hash': metadata['geometry_hash'],
         'statistics': metadata['after'],
         'warnings': metadata['warnings'],
+    })
+
+
+@app.route('/api/workspace/test-pattern', methods=['POST'])
+def workspace_test_pattern():
+    """Create PCP's compact, known-dimension compensation test source."""
+    filename = 'PCP_compensation_test.svg'
+    destination = os.path.join(app.config['UPLOAD_PATH'], filename)
+    svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="90mm" height="55mm" viewBox="0 0 90 55">
+<path d="M5 5H25V25H5Z"/>
+<circle cx="40" cy="15" r="10"/>
+<path d="M55 25L65 5L75 25L65 17Z"/>
+<circle cx="7" cy="37" r=".5"/><circle cx="12" cy="37" r="1"/><circle cx="18" cy="37" r="1.5"/>
+<path d="M28 33H48V48H28Z"/>
+<path d="M56 34L65 48L74 34L68 39L65 34L62 39Z"/>
+<path d="M80 34V48M77 37H83M77 45H83"/>
+</svg>'''
+    temporary = tempfile.NamedTemporaryFile(
+        mode='w', encoding='utf-8', prefix='.pcp-test-', suffix='.svg',
+        dir=app.config['UPLOAD_PATH'], delete=False,
+    )
+    try:
+        temporary.write(svg)
+        temporary.flush()
+        os.fsync(temporary.fileno())
+        temporary.close()
+        os.replace(temporary.name, destination)
+    except OSError as exc:
+        if not temporary.closed:
+            temporary.close()
+        if os.path.exists(temporary.name):
+            os.unlink(temporary.name)
+        return jsonify({'error': 'Could not create the test pattern: ' + str(exc)}), 500
+    return jsonify({
+        'filename': filename,
+        'message': 'Created the PCP compensation test pattern. Preview it before cutting.',
+        'requires_operator_confirmation': True,
     })
 
 
@@ -451,6 +490,17 @@ def start_plot():
 
         if not os.path.exists(file):
             return 'File not found', 400
+        if (
+            filename.startswith('PCP_compensation_test')
+            and request.form.get('operator_confirm_test') != 'confirmed'
+        ):
+            return jsonify({
+                'error': (
+                    'Confirm that media is loaded, the blade/tool is ready, and this '
+                    'physical compensation test may be transmitted.'
+                ),
+                'requires_operator_confirmation': True,
+            }), 409
 
         job_id = jobqueue.enqueue_job(file, port, baudrate, device, tasmota_ctrl)
         _emit_job_update()

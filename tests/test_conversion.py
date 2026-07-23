@@ -232,6 +232,61 @@ class TestConversionEndpoint(unittest.TestCase):
         )
         self.assertEqual(hpgl_paths, workspace._quantized_paths(body['cut_paths']))
 
+    def test_compensation_test_pattern_requires_operator_confirmation(self):
+        created = self.client.post('/api/workspace/test-pattern')
+        body = created.get_json()
+        self.assertEqual(created.status_code, 200)
+        self.assertTrue(body['requires_operator_confirmation'])
+        self.assertTrue(Path(self.directory.name, body['filename']).is_file())
+
+        hpgl_name = 'PCP_compensation_test_90x55mm.hpgl'
+        Path(self.directory.name, hpgl_name).write_bytes(b'IN;SP1;PA;PU;SP0;')
+        refused = self.client.post('/start_plot', data={
+            'file': hpgl_name,
+            'port': '/dev/serial/by-id/test',
+            'baudrate': '9600',
+            'device': 'creation_1200',
+        })
+        self.assertEqual(refused.status_code, 409)
+        self.assertTrue(refused.get_json()['requires_operator_confirmation'])
+
+    def test_compensated_preview_matches_generated_hpgl(self):
+        Path(self.directory.name, 'square.svg').write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm">'
+            '<path d="M0 0H20V20H0Z"/></svg>'
+        )
+        request_body = {
+            'manifest_version': 1,
+            'roll_width_mm': 100,
+            'items': [{
+                'filename': 'square.svg',
+                'target_width_mm': 20,
+                'target_height_mm': 20,
+                'copies': 1,
+            }],
+            'layout': {'automatic': True, 'edge_margin_mm': 5, 'spacing_mm': 5},
+            'preparation': {},
+            'cutting_aids': {
+                'overcut_enabled': True,
+                'overcut_mm': 1,
+                'blade_compensation_enabled': True,
+                'blade_offset_mm': 0.25,
+            },
+        }
+        preview = self.client.post('/api/workspace/preview', json=request_body)
+        preview_body = preview.get_json()
+        self.assertEqual(preview.status_code, 200)
+        self.assertTrue(preview_body['valid'])
+        self.assertNotEqual(preview_body['intended_paths'], preview_body['cut_paths'])
+        request_body['geometry_hash'] = preview_body['geometry_hash']
+        generated = self.client.post('/api/workspace/generate', json=request_body)
+        generated_body = generated.get_json()
+        self.assertEqual(generated.status_code, 200)
+        emitted, _warnings = workspace.load_hpgl_paths(
+            Path(self.directory.name, generated_body['filename'])
+        )
+        self.assertEqual(emitted, workspace._quantized_paths(preview_body['cut_paths']))
+
     @patch.object(main, 'svg_geometry_dimensions', return_value=(210.0, 105.0))
     def test_dimensions_endpoint_returns_aspect_ratio(self, _dimensions):
         Path(self.directory.name, 'art.svg').write_text('<svg/>')

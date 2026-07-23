@@ -147,6 +147,15 @@ layout can be changed to manual positioning by dragging a copy or entering its
 X/Y position. Collisions and roll overflow are highlighted and block HPGL
 generation. Uploaded HPGL remains an exact, read-only preview.
 
+The **Vinyl-cutting aids** panel optionally adds per-copy or whole-layout weed
+borders, weed lines through free strips, closed-contour overcut, and
+drag-blade carriage compensation. All aids start disabled. The cyan intended
+contour can be compared with the actual compensated path; animation and HPGL
+use the latter. Invalid/self-intersecting compensation and unsafe weed-border
+overlap block generation. A built-in compensation test pattern covers curves,
+sharp corners, small details, and closure, and requires explicit media/tool
+confirmation before PCP will queue it.
+
 ## Running Tests
 
 ```bash
@@ -168,6 +177,7 @@ python -m unittest discover -s tests -v
 - [x] Immediate cancel and guarded USB serial reset controls
 - [x] Preflight diagnostics and safe cut-path optimization
 - [x] Multiple SVG copies and deterministic roll layout
+- [x] Weeding, overcut, drag-blade compensation, and guarded test pattern
 
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.

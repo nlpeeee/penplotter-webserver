@@ -142,7 +142,7 @@ class TestCopiesAndRollLayout(unittest.TestCase):
             '_paths': paths,
         }
 
-    def preview(self, items, roll_width=100, layout=None):
+    def preview(self, items, roll_width=100, layout=None, cutting_aids=None):
         sources = {item['filepath']: item['_paths'] for item in items}
         clean_items = [{key: value for key, value in item.items() if key != '_paths'} for item in items]
         with unittest.mock.patch.object(
@@ -153,6 +153,7 @@ class TestCopiesAndRollLayout(unittest.TestCase):
                 roll_width,
                 layout or workspace.Layout(),
                 workspace.Preparation(enabled=False),
+                cutting_aids,
             )
 
     def test_deterministic_rows_preserve_design_and_copy_order(self):
@@ -210,6 +211,84 @@ class TestCopiesAndRollLayout(unittest.TestCase):
         item = self.item('art.svg', RECT, 40, 20, copies=1.5)
         with self.assertRaisesRegex(workspace.WorkspaceError, 'whole number'):
             self.preview([item])
+
+
+class TestVinylCuttingAids(TestCopiesAndRollLayout):
+    def test_weed_lines_are_in_free_strips_and_border_is_last(self):
+        item = self.item('art.svg', RECT, 20, 10, copies=2)
+        _paths, metadata = self.preview(
+            [item],
+            layout=workspace.Layout(edge_margin_mm=5, spacing_mm=10),
+            cutting_aids=workspace.CuttingAids(
+                weed_enabled=True,
+                weed_border_mode='layout',
+                weed_margin_mm=5,
+                weed_vertical=True,
+            ),
+        )
+        self.assertTrue(metadata['valid'])
+        self.assertEqual(len(metadata['weed_paths']), 1)
+        weed = metadata['weed_paths'][0]
+        self.assertAlmostEqual(weed[0][0], 30)
+        self.assertEqual(metadata['path_roles'][-2:], ['weed_line', 'weed_border'])
+        self.assertEqual(metadata['cut_paths'][-1], metadata['weed_border_paths'][0])
+
+    def test_copy_borders_that_enter_other_designs_block_generation(self):
+        item = self.item('art.svg', RECT, 20, 10, copies=2)
+        _paths, metadata = self.preview(
+            [item],
+            layout=workspace.Layout(edge_margin_mm=10, spacing_mm=2),
+            cutting_aids=workspace.CuttingAids(
+                weed_enabled=True,
+                weed_border_mode='copy',
+                weed_margin_mm=5,
+            ),
+        )
+        self.assertFalse(metadata['valid'])
+        self.assertIn(
+            'weed_border_collision',
+            {warning['code'] for warning in metadata['warnings']},
+        )
+
+    def test_overcut_follows_initial_closed_path_trajectory(self):
+        square = [(0, 0), (20, 0), (20, 20), (0, 20), (0, 0)]
+        overcut = workspace._overcut_path(square, 3)
+        self.assertEqual(overcut[:len(square)], square)
+        self.assertEqual(overcut[-1], (3.0, 0.0))
+        self.assertFalse(workspace._is_closed(overcut))
+
+    def test_blade_compensation_adds_pivot_arcs_and_validates_square(self):
+        square = [(0, 0), (20, 0), (20, 20), (0, 20), (0, 0)]
+        compensated = workspace._blade_compensated_path(square, 0.25)
+        self.assertEqual(compensated[0], (0.25, 0.0))
+        self.assertEqual(compensated[-1], compensated[0])
+        self.assertGreater(len(compensated), len(square))
+        self.assertTrue(workspace._compensation_is_valid([compensated]))
+
+    def test_self_intersecting_compensation_is_invalid(self):
+        bow_tie = [(0, 0), (20, 20), (0, 20), (20, 0), (0, 0)]
+        compensated = workspace._blade_compensated_path(bow_tie, 0.25)
+        self.assertFalse(workspace._compensation_is_valid([compensated]))
+
+    def test_emitted_hpgl_hash_covers_compensated_carriage_path(self):
+        item = self.item('art.svg', RECT, 20, 10)
+        paths, metadata = self.preview(
+            [item],
+            cutting_aids=workspace.CuttingAids(
+                overcut_enabled=True,
+                overcut_mm=1,
+                blade_compensation_enabled=True,
+                blade_offset_mm=0.25,
+            ),
+        )
+        import hashlib
+        self.assertTrue(metadata['valid'])
+        self.assertNotEqual(metadata['intended_paths'], metadata['cut_paths'])
+        self.assertEqual(metadata['compensated_paths'], metadata['cut_paths'])
+        self.assertEqual(
+            metadata['geometry_hash'],
+            hashlib.sha256(workspace.hpgl_bytes(paths)).hexdigest(),
+        )
 
 
 if __name__ == '__main__':

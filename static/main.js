@@ -238,9 +238,6 @@ function clearLog() {
 
 // Start plotting — enqueues a job; the worker processes it asynchronously
 function startPlot() {
-  const plotterData = jQuery('#plotterData').serializeArray()
-  console.log('plotterData', plotterData);
-
   // Validation
   if (jQuery('#fileName').val() == '') {
     notify('No *.hpgl file selected. Click Select beside an HPGL file.', 'danger');
@@ -255,7 +252,10 @@ function startPlot() {
     return false
   }
 
-  axios.post('/start_plot', jQuery('#plotterData').serialize())
+  var submit = function(confirmedTest) {
+    var plotterData = jQuery('#plotterData').serialize();
+    if (confirmedTest) plotterData += '&operator_confirm_test=confirmed';
+    axios.post('/start_plot', plotterData)
     .then(function(response) {
       // handle success
       if (response.status == 200) {
@@ -267,6 +267,14 @@ function startPlot() {
       notify(error, 'danger')
       console.error(error);
     });
+  };
+  if (jQuery('#fileName').val().indexOf('PCP_compensation_test') === 0) {
+    UIkit.modal.confirm(
+      'Physical compensation test: confirm media is loaded and the blade/tool is ready. Commands already buffered by the cutter cannot be recalled.'
+    ).then(function() { submit(true); });
+  } else {
+    submit(false);
+  }
 }
 
 function stopPlot() {
@@ -618,6 +626,17 @@ function workspaceRequestData() {
       merge_tolerance_mm: workspaceNumber('#workspaceMergeTolerance', 0.05),
       simplify_enabled: jQuery('#workspaceSimplify').is(':checked'),
       simplify_tolerance_mm: workspaceNumber('#workspaceSimplifyTolerance', 0.05)
+    },
+    cutting_aids: {
+      weed_enabled: jQuery('#workspaceWeedEnabled').is(':checked'),
+      weed_border_mode: jQuery('#workspaceWeedBorderMode').val() || 'layout',
+      weed_margin_mm: workspaceNumber('#workspaceWeedMargin', 5),
+      weed_horizontal: jQuery('#workspaceWeedHorizontal').is(':checked'),
+      weed_vertical: jQuery('#workspaceWeedVertical').is(':checked'),
+      overcut_enabled: jQuery('#workspaceOvercutEnabled').is(':checked'),
+      overcut_mm: workspaceNumber('#workspaceOvercut', 1),
+      blade_compensation_enabled: jQuery('#workspaceBladeCompensation').is(':checked'),
+      blade_offset_mm: workspaceNumber('#workspaceBladeOffset', 0.25)
     }
   };
 }
@@ -846,20 +865,34 @@ function workspaceRender(resetView) {
   cutterWorkspace.metadata = { bounds: bounds, rollWidth: rollWidth, rollLength: rollLength, outOfBounds: out };
 
   jQuery('#workspaceRoll').attr({ width: rollWidth, height: rollLength });
-  var cuts = '', travels = '', markers = '', original = '', instances = '';
+  var cuts = '', travels = '', markers = '', original = '', intendedOverlay = '', instances = '';
   var travelPaths = workspaceTravelPaths(paths);
+  var pathRoles = cutterWorkspace.serverPreview
+    ? (cutterWorkspace.serverPreview.path_roles || []) : [];
   cutterWorkspace.renderedPaths = paths;
   cutterWorkspace.renderedTravels = travelPaths;
   paths.forEach(function(path, index) {
-    cuts += '<path class="workspace-cut-path" data-sequence="' + index + '" d="' + workspacePathD(path) + '"/>';
+    var roleClass = pathRoles[index] === 'weed_line' ? ' workspace-weed-line'
+      : (pathRoles[index] === 'weed_border' ? ' workspace-weed-border' : '');
+    cuts += '<path class="workspace-cut-path' + roleClass + '" data-sequence="' + index + '" d="' + workspacePathD(path) + '"/>';
     if (travelPaths[index]) travels += '<path class="workspace-travel-path" data-sequence="' + index + '" d="' + workspacePathD(travelPaths[index]) + '"/>';
     if (jQuery('#workspaceOrder').is(':checked')) {
       markers += '<text x="' + (path[0][0] + 1) + '" y="' + (path[0][1] - 1) + '" fill="#7c3aed">' + (index + 1) + '</text>';
     }
   });
   if (cutterWorkspace.serverPreview && jQuery('#workspaceShowOriginal').is(':checked')) {
-    (cutterWorkspace.serverPreview.intended_paths || []).forEach(function(path) {
+    (cutterWorkspace.serverPreview.original_paths || cutterWorkspace.serverPreview.intended_paths || []).forEach(function(path) {
       original += '<path d="' + workspacePathD(path) + '"/>';
+    });
+  }
+  if (
+    cutterWorkspace.serverPreview
+    && cutterWorkspace.serverPreview.compensated_paths
+    && cutterWorkspace.serverPreview.compensated_paths.length
+    && jQuery('#workspaceShowIntended').is(':checked')
+  ) {
+    (cutterWorkspace.serverPreview.intended_paths || []).forEach(function(path) {
+      intendedOverlay += '<path d="' + workspacePathD(path) + '"/>';
     });
   }
   if (cutterWorkspace.serverPreview && cutterWorkspace.serverPreview.instances) {
@@ -878,6 +911,7 @@ function workspaceRender(resetView) {
   markers += '<circle cx="' + last[0] + '" cy="' + last[1] + '" r="1.8" fill="#111827" stroke="#fff" stroke-width="0.4"/>';
   jQuery('#workspaceCutsLayer').html(cuts).toggleClass('out-of-bounds', out);
   jQuery('#workspaceOriginalLayer').html(original);
+  jQuery('#workspaceIntendedLayer').html(intendedOverlay);
   jQuery('#workspaceInstancesLayer').html(instances);
   jQuery('#workspaceTravelsLayer').html(travels).toggle(jQuery('#workspaceTravels').is(':checked'));
   jQuery('#workspaceMarkersLayer').html(markers);
@@ -1115,7 +1149,31 @@ function workspaceBindControls() {
     workspaceRender(false);
     workspaceSchedulePreparation(false);
   });
-  jQuery('#workspaceTravels, #workspaceOrder, #workspaceShowOriginal').off('.workspace').on('change.workspace', function() { workspaceRender(false); });
+  jQuery('.workspace-cutting-aid').off('.workspace').on('input.workspace change.workspace', function() {
+    if (this.id === 'workspaceBladeCompensation' && jQuery(this).is(':checked')) {
+      jQuery('#workspaceShowIntended').prop('checked', true);
+    }
+    workspaceRender(false);
+    workspaceSchedulePreparation(false);
+  });
+  jQuery('#workspaceTravels, #workspaceOrder, #workspaceShowOriginal, #workspaceShowIntended')
+    .off('.workspace').on('change.workspace', function() { workspaceRender(false); });
+  jQuery('#workspaceTestPattern').off('.workspace').on('click.workspace', function() {
+    var button = jQuery(this).prop('disabled', true).text('Creating…');
+    axios.post('/api/workspace/test-pattern')
+      .then(function(response) {
+        return updateFiles(response.data.filename).then(function() {
+          notify(response.data.message, 'primary');
+          previewFile(response.data.filename);
+        });
+      })
+      .catch(function(error) {
+        var message = error.response && error.response.data && error.response.data.error
+          ? error.response.data.error : (error.message || 'Could not create the test pattern.');
+        notify(message, 'danger');
+      })
+      .then(function() { button.prop('disabled', false).text('Create compensation test pattern'); });
+  });
   jQuery('#workspaceFitDesign').off('.workspace').on('click.workspace', workspaceFitDesign);
   jQuery('#workspaceFitRoll, #workspaceResetView').off('.workspace').on('click.workspace', workspaceFitRoll);
   jQuery('#workspacePlay').off('.workspace').on('click.workspace', workspacePlay);
@@ -1230,6 +1288,12 @@ function previewFile(filename) {
       jQuery('#workspacePreparationEnabled, #workspaceRemoveDuplicates, #workspaceInsideFirst, #workspaceMinimizeTravel').prop('checked', true);
       jQuery('#workspaceMerge, #workspaceSimplify, #workspaceShowOriginal').prop('checked', false);
       jQuery('#workspaceMergeTolerance, #workspaceSimplifyTolerance').val('0.05');
+      jQuery('#workspaceWeedEnabled, #workspaceWeedHorizontal, #workspaceWeedVertical, #workspaceOvercutEnabled, #workspaceBladeCompensation').prop('checked', false);
+      jQuery('#workspaceShowIntended').prop('checked', true);
+      jQuery('#workspaceWeedBorderMode').val('layout');
+      jQuery('#workspaceWeedMargin').val('5');
+      jQuery('#workspaceOvercut').val('1');
+      jQuery('#workspaceBladeOffset').val('0.25');
       jQuery('#workspaceAutoLayout').prop('checked', true);
       jQuery('#workspaceAutoRotate').prop('checked', false);
       jQuery('#workspaceEdgeMargin, #workspaceCopySpacing').val('5');
@@ -1247,7 +1311,9 @@ function previewFile(filename) {
         .toggle(!payload.read_only);
       jQuery('.workspace-transform').prop('disabled', payload.read_only);
       jQuery('.workspace-preparation').prop('disabled', payload.read_only);
+      jQuery('.workspace-cutting-aid').prop('disabled', payload.read_only);
       jQuery('#workspacePreparation').toggle(!payload.read_only);
+      jQuery('#workspaceCuttingAids').toggle(!payload.read_only);
       jQuery('#workspaceRollWidth').prop('disabled', false);
       jQuery('#workspaceReadOnly').toggle(payload.read_only);
       jQuery('#workspaceGenerate').toggle(!payload.read_only);
