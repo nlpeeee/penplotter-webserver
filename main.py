@@ -991,6 +991,11 @@ def v2_view(view):
 def ui_state():
     configured_port = config['plotter'].get('port', '')
     detected_ports = send2serial.listComPorts().get('content', [])
+    configured_port_exists = bool(configured_port and os.path.exists(configured_port))
+    if configured_port_exists and configured_port not in detected_ports:
+        # pyserial reports the resolved tty (for example /dev/ttyUSB0), while
+        # PCP deliberately stores the stable /dev/serial/by-id/... symlink.
+        detected_ports.insert(0, configured_port)
     recent_jobs = jobqueue.get_recent_jobs()
     active_job = next(
         (
@@ -1006,7 +1011,9 @@ def ui_state():
         port_state, serial_operation = 'resetting', 'reset'
     elif globals.active_job_id is not None:
         port_state, serial_operation = 'busy', 'cut'
-    elif configured_port and configured_port in detected_ports:
+    elif configured_port and (
+        configured_port in detected_ports or configured_port_exists
+    ):
         port_state, serial_operation = 'available', 'idle'
     elif configured_port:
         port_state, serial_operation = 'missing', 'idle'

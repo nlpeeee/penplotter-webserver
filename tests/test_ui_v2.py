@@ -63,6 +63,17 @@ class V2InterfaceTests(unittest.TestCase):
             "missing" if configured else "unknown",
         )
 
+    @patch.object(main.os.path, "exists", return_value=True)
+    @patch.object(main.jobqueue, "get_queue_count", return_value=0)
+    @patch.object(main.jobqueue, "get_recent_jobs", return_value=[])
+    @patch.object(main.send2serial, "listComPorts", return_value={"content": ["/dev/ttyUSB0"]})
+    def test_ui_state_resolves_stable_serial_symlink(self, _ports, _jobs, _count, _exists):
+        configured = main.config["plotter"].get("port", "")
+        payload = self.client.get("/api/ui-state").get_json()
+        if configured:
+            self.assertEqual(payload["plotter"]["port_state"], "available")
+            self.assertIn(configured, payload["plotter"]["detected_ports"])
+
     @patch.object(main.jobqueue, "get_queue_count", return_value=3)
     @patch.object(main.send2serial, "listComPorts", return_value={"content": []})
     @patch.object(main.jobqueue, "get_recent_jobs")
