@@ -45,10 +45,13 @@ class V2InterfaceTests(unittest.TestCase):
         self.assertIn("<title>PCP V2</title>", default_html)
         self.assertIn("<title>PCP</title>", v1_html)
 
+    @patch.object(main.os.path, "exists", return_value=False)
     @patch.object(main.jobqueue, "get_queue_count", return_value=0)
     @patch.object(main.jobqueue, "get_recent_jobs", return_value=[])
     @patch.object(main.send2serial, "listComPorts")
-    def test_ui_state_distinguishes_available_and_missing_ports(self, ports, _jobs, _count):
+    def test_ui_state_distinguishes_available_and_missing_ports(
+        self, ports, _jobs, _count, _exists
+    ):
         configured = main.config["plotter"].get("port", "")
         ports.return_value = {"content": [configured] if configured else []}
         available = self.client.get("/api/ui-state").get_json()
