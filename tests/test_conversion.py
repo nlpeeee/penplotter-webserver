@@ -147,6 +147,46 @@ class TestConversionEndpoint(unittest.TestCase):
         self.assertEqual(body['cut_paths'][0][0], [10.0, 20.0])
         self.assertEqual(body['travel_paths'][0], [[0.0, 0.0], [10.0, 20.0]])
 
+    def test_workspace_preview_api_returns_exact_hash_and_statistics(self):
+        duplicate_svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="10mm" '
+            'viewBox="0 0 20 10"><path d="M0 0 L10 0 L10 10 Z"/>'
+            '<path d="M10 10 L10 0 L0 0 Z"/></svg>'
+        )
+        Path(self.directory.name, 'duplicate.svg').write_text(duplicate_svg)
+        response = self.client.post('/api/workspace/preview', json={
+            'filename': 'duplicate.svg',
+            'transform': {
+                'target_width_mm': 10, 'target_height_mm': 10,
+                'roll_width_mm': 100, 'offset_x_mm': 0, 'offset_y_mm': 0,
+                'rotation': 0,
+            },
+            'preparation': {},
+        })
+        body = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(body['valid'])
+        self.assertEqual(body['manifest_version'], 1)
+        self.assertEqual(body['before']['path_count'], 2)
+        self.assertEqual(body['after']['path_count'], 1)
+        self.assertEqual(len(body['geometry_hash']), 64)
+        self.assertEqual(body['cut_paths'], body['intended_paths'][:1])
+
+    def test_workspace_generate_rejects_stale_geometry_hash(self):
+        Path(self.directory.name, 'art.svg').write_text(SVG)
+        response = self.client.post('/api/workspace/generate', json={
+            'filename': 'art.svg',
+            'geometry_hash': '0' * 64,
+            'transform': {
+                'target_width_mm': 100, 'target_height_mm': 50,
+                'roll_width_mm': 1200, 'offset_x_mm': 0, 'offset_y_mm': 0,
+                'rotation': 0,
+            },
+            'preparation': {},
+        })
+        self.assertEqual(response.status_code, 422)
+        self.assertIn('changed after preview', response.get_json()['error'])
+
     @patch.object(main, 'svg_geometry_dimensions', return_value=(210.0, 105.0))
     def test_dimensions_endpoint_returns_aspect_ratio(self, _dimensions):
         Path(self.directory.name, 'art.svg').write_text('<svg/>')

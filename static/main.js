@@ -515,7 +515,8 @@ var previewRequestId = 0;
 var cutterWorkspace = {
   payload: null, filename: '', view: null, metadata: null,
   animationFrame: null, animationProgress: 1, animationElements: [],
-  renderedPaths: [], renderedTravels: [], pointer: null, syncingDimensions: false
+  renderedPaths: [], renderedTravels: [], pointer: null, syncingDimensions: false,
+  serverPreview: null, preparationTimer: null, preparationRequestId: 0
 };
 
 function workspaceNumber(selector, fallback) {
@@ -541,6 +542,11 @@ function workspaceBounds(paths) {
 function workspaceTransformedPaths() {
   var payload = cutterWorkspace.payload;
   if (!payload) return [];
+  if (cutterWorkspace.serverPreview) {
+    return cutterWorkspace.serverPreview.cut_paths.map(function(path) {
+      return path.map(function(point) { return [point[0], point[1]]; });
+    });
+  }
   if (payload.read_only) return payload.cut_paths.map(function(path) {
     return path.map(function(point) { return [point[0], point[1]]; });
   });
@@ -566,6 +572,90 @@ function workspaceTransformedPaths() {
       return [next[0] + offsetX, next[1] + offsetY];
     });
   });
+}
+
+function workspaceRequestData() {
+  return {
+    manifest_version: 1,
+    filename: cutterWorkspace.filename,
+    transform: {
+      target_width_mm: workspaceNumber('#workspaceWidth', cutterWorkspace.payload.width_mm),
+      target_height_mm: workspaceNumber('#workspaceHeight', cutterWorkspace.payload.height_mm),
+      roll_width_mm: workspaceNumber('#workspaceRollWidth', 1200),
+      offset_x_mm: workspaceNumber('#workspaceOffsetX', 0),
+      offset_y_mm: workspaceNumber('#workspaceOffsetY', 0),
+      rotation: parseInt(jQuery('#workspaceRotation').val(), 10) || 0,
+      mirror_x: jQuery('#workspaceMirrorX').is(':checked'),
+      mirror_y: jQuery('#workspaceMirrorY').is(':checked')
+    },
+    preparation: {
+      enabled: jQuery('#workspacePreparationEnabled').is(':checked'),
+      remove_duplicates: jQuery('#workspaceRemoveDuplicates').is(':checked'),
+      inside_first: jQuery('#workspaceInsideFirst').is(':checked'),
+      minimize_travel: jQuery('#workspaceMinimizeTravel').is(':checked'),
+      merge_enabled: jQuery('#workspaceMerge').is(':checked'),
+      merge_tolerance_mm: workspaceNumber('#workspaceMergeTolerance', 0.05),
+      simplify_enabled: jQuery('#workspaceSimplify').is(':checked'),
+      simplify_tolerance_mm: workspaceNumber('#workspaceSimplifyTolerance', 0.05)
+    }
+  };
+}
+
+function workspaceStatsHtml(preview) {
+  if (!preview || !preview.before || !preview.after) return '';
+  var before = preview.before, after = preview.after;
+  function length(value) { return Number(value || 0).toFixed(1) + ' mm'; }
+  return '<strong>Preflight</strong><br>' +
+    'Paths: ' + before.path_count + ' → ' + after.path_count + '<br>' +
+    'Points: ' + before.point_count + ' → ' + after.point_count + '<br>' +
+    'Cut: ' + length(before.cut_length_mm) + ' → ' + length(after.cut_length_mm) + '<br>' +
+    'Travel: ' + length(before.travel_length_mm) + ' → ' + length(after.travel_length_mm) + '<br>' +
+    'HPGL: ' + before.hpgl_bytes + ' → ' + after.hpgl_bytes + ' bytes';
+}
+
+function workspaceApplyServerPreview(preview, resetView) {
+  cutterWorkspace.serverPreview = preview;
+  jQuery('#workspacePreparing').hide();
+  jQuery('#workspacePreflightStats').html(workspaceStatsHtml(preview)).show();
+  var warnings = (preview.warnings || []).map(function(item) {
+    return typeof item === 'string' ? item : item.message;
+  });
+  jQuery('#previewWarning').toggle(warnings.length > 0).text(warnings.join(' '));
+  if (jQuery('#workspaceMerge').is(':checked') || jQuery('#workspaceSimplify').is(':checked')) {
+    jQuery('#workspaceShowOriginal').prop('checked', true);
+  }
+  workspaceRender(resetView);
+}
+
+function workspaceRefreshPrepared(resetView) {
+  if (!cutterWorkspace.payload || cutterWorkspace.payload.read_only) return;
+  var requestId = ++cutterWorkspace.preparationRequestId;
+  jQuery('#workspacePreparing').show();
+  jQuery('#workspaceGenerate').prop('disabled', true);
+  axios.post('/api/workspace/preview', workspaceRequestData())
+    .then(function(response) {
+      if (requestId !== cutterWorkspace.preparationRequestId) return;
+      workspaceApplyServerPreview(response.data, resetView);
+    })
+    .catch(function(error) {
+      if (requestId !== cutterWorkspace.preparationRequestId) return;
+      cutterWorkspace.serverPreview = null;
+      jQuery('#workspacePreparing').hide();
+      var message = error.response && error.response.data && error.response.data.error
+        ? error.response.data.error : (error.message || 'Cut preparation failed.');
+      jQuery('#previewWarning').text(message).show();
+      jQuery('#workspaceGenerate').prop('disabled', true);
+    });
+}
+
+function workspaceSchedulePreparation(resetView) {
+  clearTimeout(cutterWorkspace.preparationTimer);
+  cutterWorkspace.serverPreview = null;
+  jQuery('#workspacePreparing').show();
+  jQuery('#workspaceGenerate').prop('disabled', true);
+  cutterWorkspace.preparationTimer = setTimeout(function() {
+    workspaceRefreshPrepared(resetView);
+  }, 180);
 }
 
 function workspaceTravelPaths(paths) {
@@ -639,7 +729,7 @@ function workspaceRender(resetView) {
   cutterWorkspace.metadata = { bounds: bounds, rollWidth: rollWidth, rollLength: rollLength, outOfBounds: out };
 
   jQuery('#workspaceRoll').attr({ width: rollWidth, height: rollLength });
-  var cuts = '', travels = '', markers = '';
+  var cuts = '', travels = '', markers = '', original = '';
   var travelPaths = workspaceTravelPaths(paths);
   cutterWorkspace.renderedPaths = paths;
   cutterWorkspace.renderedTravels = travelPaths;
@@ -650,10 +740,16 @@ function workspaceRender(resetView) {
       markers += '<text x="' + (path[0][0] + 1) + '" y="' + (path[0][1] - 1) + '" fill="#7c3aed">' + (index + 1) + '</text>';
     }
   });
+  if (cutterWorkspace.serverPreview && jQuery('#workspaceShowOriginal').is(':checked')) {
+    (cutterWorkspace.serverPreview.intended_paths || []).forEach(function(path) {
+      original += '<path d="' + workspacePathD(path) + '"/>';
+    });
+  }
   var first = paths[0][0], lastPath = paths[paths.length - 1], last = lastPath[lastPath.length - 1];
   markers += '<circle cx="' + first[0] + '" cy="' + first[1] + '" r="1.8" fill="#16a34a" stroke="#fff" stroke-width="0.4"/>';
   markers += '<circle cx="' + last[0] + '" cy="' + last[1] + '" r="1.8" fill="#111827" stroke="#fff" stroke-width="0.4"/>';
   jQuery('#workspaceCutsLayer').html(cuts).toggleClass('out-of-bounds', out);
+  jQuery('#workspaceOriginalLayer').html(original);
   jQuery('#workspaceTravelsLayer').html(travels).toggle(jQuery('#workspaceTravels').is(':checked'));
   jQuery('#workspaceMarkersLayer').html(markers);
   jQuery('#previewInfo').text(
@@ -661,7 +757,10 @@ function workspaceRender(resetView) {
     (bounds.maxX - bounds.minX).toFixed(1) + ' × ' + (bounds.maxY - bounds.minY).toFixed(1) + ' mm • roll length ' + rollLength.toFixed(1) + ' mm'
   );
   jQuery('#workspaceBoundsError').toggle(out).text(out ? 'The red cut path is outside the loaded roll. Move, rotate, or scale it before generating HPGL.' : '');
-  jQuery('#workspaceGenerate').prop('disabled', out || cutterWorkspace.payload.read_only);
+  jQuery('#workspaceGenerate').prop(
+    'disabled', out || cutterWorkspace.payload.read_only
+    || (!cutterWorkspace.payload.read_only && !cutterWorkspace.serverPreview)
+  );
   localStorage.setItem('pcutRollWidthMm', rollWidth);
   workspacePrepareSimulation(cutterWorkspace.animationProgress);
   if (resetView || !cutterWorkspace.view) workspaceFitRoll(); else workspaceRenderGrid();
@@ -799,8 +898,13 @@ function workspaceBindControls() {
       cutterWorkspace.syncingDimensions = false;
     }
     workspaceRender(false);
+    workspaceSchedulePreparation(false);
   });
-  jQuery('#workspaceTravels, #workspaceOrder').off('.workspace').on('change.workspace', function() { workspaceRender(false); });
+  jQuery('.workspace-preparation').off('.workspace').on('input.workspace change.workspace', function() {
+    workspaceRender(false);
+    workspaceSchedulePreparation(false);
+  });
+  jQuery('#workspaceTravels, #workspaceOrder, #workspaceShowOriginal').off('.workspace').on('change.workspace', function() { workspaceRender(false); });
   jQuery('#workspaceFitDesign').off('.workspace').on('click.workspace', workspaceFitDesign);
   jQuery('#workspaceFitRoll, #workspaceResetView').off('.workspace').on('click.workspace', workspaceFitRoll);
   jQuery('#workspacePlay').off('.workspace').on('click.workspace', workspacePlay);
@@ -836,6 +940,7 @@ function workspaceBindControls() {
     if (start.mode === 'design') {
       jQuery('#workspaceOffsetX').val((start.offsetX + point.x - start.point.x).toFixed(1));
       jQuery('#workspaceOffsetY').val((start.offsetY + point.y - start.point.y).toFixed(1));
+      cutterWorkspace.serverPreview = null;
       workspaceRender(false);
     } else {
       workspaceSetView({
@@ -843,14 +948,21 @@ function workspaceBindControls() {
         width: start.view.width, height: start.view.height
       });
     }
-  }).on('pointerup.workspace pointercancel.workspace', function() { cutterWorkspace.pointer = null; svg.removeClass('dragging'); });
+  }).on('pointerup.workspace pointercancel.workspace', function() {
+    var movedDesign = cutterWorkspace.pointer && cutterWorkspace.pointer.mode === 'design';
+    cutterWorkspace.pointer = null; svg.removeClass('dragging');
+    if (movedDesign) workspaceSchedulePreparation(false);
+  });
 }
 
 function workspaceGenerateHpgl() {
-  if (!cutterWorkspace.payload || cutterWorkspace.payload.read_only || cutterWorkspace.metadata.outOfBounds) return;
+  if (!cutterWorkspace.payload || cutterWorkspace.payload.read_only
+      || cutterWorkspace.metadata.outOfBounds || !cutterWorkspace.serverPreview) return;
   var button = jQuery('#workspaceGenerate');
   button.prop('disabled', true).text('Generating…');
-  axios.post('/start_conversion', jQuery('#workspaceData').serialize())
+  var requestData = workspaceRequestData();
+  requestData.geometry_hash = cutterWorkspace.serverPreview.geometry_hash;
+  axios.post('/api/workspace/generate', requestData)
     .then(function(response) {
       return updateFiles(response.data.filename).then(function() {
         UIkit.modal('#modal-preview').hide();
@@ -870,6 +982,7 @@ function previewFile(filename) {
   var requestId = ++previewRequestId;
   cancelAnimationFrame(cutterWorkspace.animationFrame);
   cutterWorkspace.filename = filename; cutterWorkspace.payload = null; cutterWorkspace.view = null;
+  cutterWorkspace.serverPreview = null;
   jQuery('#previewModalTitle').text('Cut workspace — ' + filename);
   jQuery('#previewError, #cutWorkspace').hide();
   jQuery('#previewSpinner').show();
@@ -888,7 +1001,12 @@ function previewFile(filename) {
       jQuery('#workspaceRotation').val('0');
       jQuery('#workspaceMirrorX, #workspaceMirrorY').prop('checked', false);
       jQuery('#workspaceTravels, #workspaceOrder').prop('checked', false);
+      jQuery('#workspacePreparationEnabled, #workspaceRemoveDuplicates, #workspaceInsideFirst, #workspaceMinimizeTravel').prop('checked', true);
+      jQuery('#workspaceMerge, #workspaceSimplify, #workspaceShowOriginal').prop('checked', false);
+      jQuery('#workspaceMergeTolerance, #workspaceSimplifyTolerance').val('0.05');
       jQuery('.workspace-transform').prop('disabled', payload.read_only);
+      jQuery('.workspace-preparation').prop('disabled', payload.read_only);
+      jQuery('#workspacePreparation').toggle(!payload.read_only);
       jQuery('#workspaceRollWidth').prop('disabled', false);
       jQuery('#workspaceReadOnly').toggle(payload.read_only);
       jQuery('#workspaceGenerate').toggle(!payload.read_only);
@@ -896,6 +1014,7 @@ function previewFile(filename) {
       workspaceBindControls();
       jQuery('#previewSpinner').hide(); jQuery('#cutWorkspace').show();
       workspaceRender(true);
+      if (!payload.read_only) workspaceRefreshPrepared(true);
     })
     .catch(function(error) {
       if (requestId !== previewRequestId) return;

@@ -133,6 +133,13 @@ used. Width and height stay linked. The loaded roll width is remembered by the
 browser and the feed length grows to fit the job. A red path is outside the
 roll and cannot be generated. HPGL files open in an exact read-only view.
 
+The **Cut preparation** panel removes duplicate cutter paths and orders open
+lines and enclosed contours safely before minimizing pen-up travel. It reports
+path, point, distance, and HPGL-size changes. Path merging and simplification
+are opt-in and can be compared with the original overlay. Generation requires
+the geometry hash returned by the exact server preview, preventing a stale
+preview from producing a different cut.
+
 ## Running Tests
 
 ```bash
@@ -152,6 +159,7 @@ python -m unittest discover -s tests -v
 - [x] SVG and HPGL cut-path preview
 - [x] Interactive millimetre workspace and animated cut-order preview
 - [x] Immediate cancel and guarded USB serial reset controls
+- [x] Preflight diagnostics and safe cut-path optimization
 
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.

@@ -159,14 +159,19 @@ def _size_label(value):
     return f'{value:.1f}'.rstrip('0').rstrip('.')
 
 
-def convert(file, target_width_mm, target_height_mm, **options):
+def convert(file, target_width_mm, target_height_mm, preparation=None, expected_geometry_hash=None, **options):
     """Create HPGL from the same millimetre transform shown in the workspace."""
     values = dict(options)
     values['target_width_mm'] = target_width_mm
     values['target_height_mm'] = target_height_mm
     try:
         transform = workspace.parse_transform(values)
-        output_file, metadata = workspace.convert_svg(os.path.abspath(file), transform)
+        output_file, metadata = workspace.convert_svg(
+            os.path.abspath(file),
+            transform,
+            workspace.parse_preparation(preparation),
+            expected_geometry_hash=expected_geometry_hash,
+        )
     except workspace.WorkspaceError as exc:
         raise ValueError(str(exc)) from exc
     return output_file, metadata['width_mm'], metadata['height_mm']
@@ -223,6 +228,73 @@ def cut_workspace(filename):
     response = jsonify(payload)
     response.headers['Cache-Control'] = 'no-store'
     return response
+
+
+def _workspace_svg_request(data):
+    """Validate a browser workspace request without accepting client geometry."""
+    filename = data.get('filename', '')
+    safe_filename = secure_filename(filename)
+    if not safe_filename or safe_filename != filename or not safe_filename.lower().endswith('.svg'):
+        raise workspace.WorkspaceError('Invalid SVG filename.')
+    filepath = os.path.join(app.config['UPLOAD_PATH'], safe_filename)
+    if not os.path.isfile(filepath):
+        raise FileNotFoundError('The selected SVG file does not exist.')
+    transform = workspace.parse_transform(data.get('transform') or data)
+    preparation = workspace.parse_preparation(data.get('preparation') or {})
+    return safe_filename, filepath, transform, preparation
+
+
+@app.route('/api/workspace/preview', methods=['POST'])
+def workspace_preview_api():
+    data = request.get_json(silent=True) or {}
+    try:
+        filename, filepath, transform, preparation = _workspace_svg_request(data)
+        _paths, metadata = workspace.build_svg_preview(filepath, transform, preparation)
+    except FileNotFoundError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except workspace.WorkspaceError as exc:
+        return jsonify({'error': str(exc)}), 422
+    metadata.update({
+        'manifest_version': 1,
+        'filename': filename,
+        'source_type': 'svg',
+        'read_only': False,
+        'valid': not metadata['out_of_bounds'],
+    })
+    response = jsonify(metadata)
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.route('/api/workspace/generate', methods=['POST'])
+def workspace_generate_api():
+    data = request.get_json(silent=True) or {}
+    try:
+        filename, filepath, transform, preparation = _workspace_svg_request(data)
+        output, metadata = workspace.convert_svg(
+            os.path.abspath(filepath),
+            transform,
+            preparation,
+            expected_geometry_hash=data.get('geometry_hash'),
+        )
+    except FileNotFoundError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except workspace.WorkspaceError as exc:
+        return jsonify({'error': str(exc)}), 422
+    output_filename = os.path.basename(output)
+    socketio.emit('status_log', {'data': 'Created HPGL: ' + output_filename})
+    return jsonify({
+        'message': (
+            'Created ' + output_filename + ' at '
+            + _size_label(metadata['width_mm']) + ' × ' + _size_label(metadata['height_mm']) + ' mm'
+        ),
+        'filename': output_filename,
+        'width_mm': round(metadata['width_mm'], 2),
+        'height_mm': round(metadata['height_mm'], 2),
+        'geometry_hash': metadata['geometry_hash'],
+        'statistics': metadata['after'],
+        'warnings': metadata['warnings'],
+    })
 
 
 @app.route('/svg_dimensions/<filename>')
@@ -425,6 +497,17 @@ def start_conversion():
                 rotation=request.form.get('rotation', 0),
                 mirror_x=request.form.get('mirror_x', ''),
                 mirror_y=request.form.get('mirror_y', ''),
+                preparation={
+                    'enabled': request.form.get('preparation_enabled', 'true'),
+                    'remove_duplicates': request.form.get('remove_duplicates', 'true'),
+                    'inside_first': request.form.get('inside_first', 'true'),
+                    'minimize_travel': request.form.get('minimize_travel', 'true'),
+                    'merge_enabled': request.form.get('merge_enabled', ''),
+                    'merge_tolerance_mm': request.form.get('merge_tolerance_mm', 0.05),
+                    'simplify_enabled': request.form.get('simplify_enabled', ''),
+                    'simplify_tolerance_mm': request.form.get('simplify_tolerance_mm', 0.05),
+                },
+                expected_geometry_hash=request.form.get('geometry_hash') or None,
             )
         except (ValueError, FileNotFoundError) as exc:
             return jsonify({'error': str(exc)}), 400
