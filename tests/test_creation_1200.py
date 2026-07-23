@@ -49,8 +49,11 @@ class TestCreation1200SerialSettings(unittest.TestCase):
         globals.printing = True  # sendToPlotter sets this; we pre-set it here
         self.sio = _make_socketio_mock()
         self.hpgl_path = _hpgl_file()
+        self.sleep_patcher = patch('send2serial.time.sleep')
+        self.mock_sleep = self.sleep_patcher.start()
 
     def tearDown(self):
+        self.sleep_patcher.stop()
         globals.printing = False
         if os.path.exists(self.hpgl_path):
             os.remove(self.hpgl_path)
@@ -117,6 +120,46 @@ class TestCreation1200SerialSettings(unittest.TestCase):
         for size in write_sizes:
             self.assertLessEqual(size, chunk_size,
                                  f'Each write must be ≤ {chunk_size} bytes')
+
+    @patch('serial.Serial')
+    def test_long_coordinate_lists_are_split_into_short_commands(self, mock_serial_cls):
+        """A compact contour must not overflow the PCut command parser."""
+        path = _hpgl_file(b'IN;PU0,0;PD10,10,20,20,30,30;PU;')
+        mock_tty = MagicMock()
+        writes = []
+        mock_tty.write.side_effect = writes.append
+        mock_serial_cls.return_value = mock_tty
+
+        try:
+            import send2serial
+            result = send2serial._send_creation_1200(
+                self.sio, path, '/dev/ttyFAKE'
+            )
+        finally:
+            os.remove(path)
+
+        self.assertTrue(result)
+        self.assertEqual(
+            writes,
+            [b'IN;', b'PU0,0;', b'PD10,10;', b'PD20,20;', b'PD30,30;', b'PU;'],
+        )
+        self.assertTrue(all(len(command) < 256 for command in writes))
+
+    @patch('serial.Serial')
+    def test_waits_for_port_and_initialize_before_movement(self, mock_serial_cls):
+        """Opening the built-in FTDI port and IN both receive settle time."""
+        mock_tty = MagicMock()
+        mock_serial_cls.return_value = mock_tty
+
+        import send2serial
+        send2serial._send_creation_1200(
+            self.sio, self.hpgl_path, '/dev/ttyFAKE'
+        )
+
+        sleep_values = [call.args[0] for call in self.mock_sleep.call_args_list]
+        self.assertGreaterEqual(len(sleep_values), 2)
+        self.assertEqual(sleep_values[0], send2serial._CREATION_PORT_SETTLE_SECONDS)
+        self.assertIn(send2serial._CREATION_INIT_SETTLE_SECONDS, sleep_values)
 
     @patch('serial.Serial')
     def test_cancellation_stops_transmission(self, mock_serial_cls):

@@ -39,6 +39,62 @@ ERRORS = {
 # while leaving room for RTS/CTS to stall the sender when needed.
 _CREATION_CHUNK_SIZE = 256
 
+# Opening the PCut's built-in FTDI port can make the controller initialise.
+# Give it time to return online before sending HPGL.  An additional pause after
+# IN prevents the remainder of a job being queued while that command is being
+# processed.
+_CREATION_PORT_SETTLE_SECONDS = 1.5
+_CREATION_INIT_SETTLE_SECONDS = 0.75
+_CREATION_INTER_COMMAND_SECONDS = 0.002
+_CREATION_BITS_PER_BYTE = 10  # start + 8 data + stop at 8N1
+
+
+def _creation_command_fragments(command):
+    """Yield PCut-safe writes for one semicolon-terminated HPGL command.
+
+    vpype and PCP may compact an entire contour into one ``PD`` instruction.
+    Some PCut controllers have a much smaller command parser buffer than their
+    advertised job memory.  Splitting coordinate lists into equivalent
+    one-coordinate commands preserves geometry and order while bounding every
+    instruction.
+    """
+    stripped = command.strip()
+    if not stripped:
+        return
+
+    terminator = b';' if stripped.endswith(b';') else b''
+    body = stripped[:-1] if terminator else stripped
+    opcode = body[:2].upper()
+    parameters = body[2:]
+    if opcode in (b'PU', b'PD') and parameters:
+        values = [value.strip() for value in parameters.split(b',')]
+        if (
+            len(values) >= 2
+            and len(values) % 2 == 0
+            and all(value.lstrip(b'+-').isdigit() for value in values)
+        ):
+            for index in range(0, len(values), 2):
+                yield opcode + values[index] + b',' + values[index + 1] + b';'
+            return
+
+    for index in range(0, len(stripped), _CREATION_CHUNK_SIZE):
+        yield stripped[index:index + _CREATION_CHUNK_SIZE]
+
+
+def _creation_hpgl_commands(hpgl):
+    """Yield complete HPGL commands without loading a large job into memory."""
+    pending = b''
+    while True:
+        data = hpgl.read(4096)
+        if not data:
+            break
+        pending += data
+        while b';' in pending:
+            command, pending = pending.split(b';', 1)
+            yield command + b';'
+    if pending:
+        yield pending
+
 class HPGLError(Exception):
     def __init__(self, n, cause=None):
         self.errcode = n
@@ -191,30 +247,55 @@ def _send_creation_1200_unlocked(socketio, hpglfile, port, cancel_check=None):
     try:
         hpgl = open(hpglfile, 'rb')
 
-        while globals.printing and not (cancel_check and cancel_check()):
-            data = hpgl.read(_CREATION_CHUNK_SIZE)
-            if not data:
-                print('*** EOF reached, exiting.')
-                notification.telegram_sendNotification('*** EOF reached, exiting.')
-                socketio.emit('status_log', {'data': '*** EOF reached, exiting.'})
-                return True
+        socketio.emit(
+            'status_log',
+            {'data': 'Waiting for the PCut controller to finish initialising.'},
+        )
+        time.sleep(_CREATION_PORT_SETTLE_SECONDS)
 
-            try:
-                tty.write(data)
-            except SerialException as e:
-                socketio.emit('error', {'data': 'Serial write error: ' + repr(e)})
-                print(repr(e))
+        for command in _creation_hpgl_commands(hpgl):
+            if not globals.printing or (cancel_check and cancel_check()):
                 return False
 
-            total_bytes_written += len(data)
+            for fragment in _creation_command_fragments(command):
+                if not globals.printing or (cancel_check and cancel_check()):
+                    return False
+                try:
+                    tty.write(fragment)
+                except SerialException as e:
+                    socketio.emit('error', {'data': 'Serial write error: ' + repr(e)})
+                    print(repr(e))
+                    return False
+                # Pace writes at (slightly below) the actual 9600 8N1 wire
+                # rate.  Unlike tcdrain()/flush(), this remains immediately
+                # cancellable even if the cutter drops CTS.
+                time.sleep(
+                    _CREATION_INTER_COMMAND_SECONDS
+                    + len(fragment) * _CREATION_BITS_PER_BYTE / 9600.0
+                )
+
+            total_bytes_written += len(command)
+            if command.strip().upper() == b'IN;':
+                socketio.emit(
+                    'status_log',
+                    {'data': 'PCut initialised; waiting before movement commands.'},
+                )
+                time.sleep(_CREATION_INIT_SETTLE_SECONDS)
+
             if input_bytes:
-                percent = 100.0 * total_bytes_written / input_bytes
+                percent = min(100.0, 100.0 * total_bytes_written / input_bytes)
                 globals.print_progress = percent
-                print(f'{percent:.2f}%, {total_bytes_written} bytes written.')
-                socketio.emit('status_log', {'data': f'{percent:.2f}%, {total_bytes_written} bytes written.'})
+                print(f'{percent:.2f}%, {total_bytes_written} source bytes sent.')
+                socketio.emit(
+                    'status_log',
+                    {'data': f'{percent:.2f}%, {total_bytes_written} source bytes sent.'},
+                )
                 socketio.emit('print_progress', {'data': f'{percent:.2f}'})
 
-        return False  # loop exited because globals.printing was cleared (cancel)
+        print('*** EOF reached, exiting.')
+        notification.telegram_sendNotification('*** EOF reached, exiting.')
+        socketio.emit('status_log', {'data': '*** EOF reached, exiting.'})
+        return True
 
     finally:
         with globals.active_serial_lock:
