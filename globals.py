@@ -12,6 +12,9 @@ def initialize():
     global active_job_id
     active_job_id = None
 
+    global print_progress
+    print_progress = 0.0
+
     # Plot transmission and USB reset must never own the serial adapter at the
     # same time.  The closed event also lets reset wait without polling.
     global serial_operation_lock
@@ -29,6 +32,12 @@ def initialize():
 
     global reset_in_progress
     reset_in_progress = False
+
+    global reset_phase
+    reset_phase = None
+
+    global last_connection_error
+    last_connection_error = None
 
 
 # Keep module users (including Flask's test client) in a valid initial state.

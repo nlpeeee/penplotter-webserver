@@ -186,6 +186,18 @@ def get_recent_jobs(limit=20):
         conn.close()
 
 
+def get_queue_count():
+    """Return the complete queued-job count, independent of history paging."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS count FROM jobs WHERE status='queued'"
+        ).fetchone()
+        return int(row["count"])
+    finally:
+        conn.close()
+
+
 def request_cancel(job_id):
     """Cancel a queued job or request cancellation of a transmitting job."""
     conn = _connect()

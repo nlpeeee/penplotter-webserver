@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1016">
+  <title>PCP V2</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='v2/vendor.css') }}?v={{ version }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='v2/app.css') }}?v={{ version }}">
+</head>
+<body class="pcp-v2" data-ui-version="2" data-initial-view="{{ initial_view }}">
+  <a class="v2-skip-link" href="#v2Main">Skip to main content</a>
+
+  <div class="v2-app-shell">
+    <aside class="v2-sidebar" aria-label="Primary navigation">
+      <a class="v2-brand" href="/v2" aria-label="PCP V2 home">
+        <img src="{{ url_for('static', filename='img/pcp-logo.png') }}?v={{ version }}" alt="PCP logo">
+        <span>V2 Preview</span>
+      </a>
+      <nav class="v2-nav">
+        <a href="/v2" data-view-link="new-cut"><span aria-hidden="true">＋</span>New Cut</a>
+        <a href="/v2/projects" data-view-link="projects"><span aria-hidden="true">▦</span>Projects</a>
+        <a href="/v2/jobs" data-view-link="jobs"><span aria-hidden="true">≡</span>Jobs</a>
+        <a href="/v2/settings" data-view-link="settings"><span aria-hidden="true">⚙</span>Settings</a>
+      </nav>
+      <div class="v2-version-switch">
+        <a href="/v1">Open PCP V1</a>
+      </div>
+    </aside>
+
+    <header class="v2-statusbar">
+      <button id="v2MobileMenu" class="v2-icon-button v2-mobile-only" type="button" aria-label="Open navigation">☰</button>
+      <div class="v2-plotter-summary">
+        <strong class="plotter_name">{{ configuration.plotter_name }}</strong>
+        <span id="v2PortState" class="v2-status-chip" data-state="unknown">Checking port…</span>
+      </div>
+      <div class="v2-status-actions">
+        <span id="v2QueueCount">No queued jobs</span>
+        <button id="v2GlobalCancel" class="v2-button v2-button-danger v2-global-cancel stopPlot" type="button" hidden>
+          CANCEL CUT
+        </button>
+      </div>
+    </header>
+
+    <main id="v2Main" class="v2-main" tabindex="-1">
+      <section class="v2-view" data-view="new-cut">
+        <header class="v2-page-header">
+          <div>
+            <p class="v2-eyebrow">Production workspace</p>
+            <h1>Start a new cut</h1>
+            <p>Drop new artwork here. SVG files open ready for layout; HPGL opens as an exact, read-only tool path.</p>
+          </div>
+          <a class="v2-button v2-button-secondary" href="/v2/projects">Open saved project</a>
+        </header>
+
+        <div id="v2ActiveJobCard" class="v2-active-job" hidden aria-live="polite"></div>
+
+        <div class="v2-home-grid">
+          <section class="v2-panel v2-upload-panel" aria-labelledby="v2UploadTitle">
+            <div class="v2-panel-heading">
+              <div>
+                <span class="v2-step-number">1</span>
+                <h2 id="v2UploadTitle">Import artwork</h2>
+              </div>
+              <span>SVG or HPGL · 20 MB maximum</span>
+            </div>
+            <form id="uploadFiles" action="{{ url_for('upload_files') }}" class="dropzone v2-dropzone">
+              <div class="dz-message">
+                <strong>Drop files here</strong>
+                <span>or click to choose artwork</span>
+              </div>
+            </form>
+            <div id="v2ImportTray" class="v2-import-tray" hidden></div>
+          </section>
+
+          <aside class="v2-panel v2-cutter-card" aria-labelledby="v2CutterTitle">
+            <div class="v2-panel-heading">
+              <div>
+                <span class="v2-step-number">2</span>
+                <h2 id="v2CutterTitle">Cutter readiness</h2>
+              </div>
+            </div>
+            <dl class="v2-fact-list">
+              <div><dt>Cutter</dt><dd id="v2CutterName">{{ configuration.plotter_name }}</dd></div>
+              <div><dt>Serial port</dt><dd id="v2CutterPort" class="v2-mono">{{ configuration.plotter_port or 'Not configured' }}</dd></div>
+              <div><dt>Operation</dt><dd id="v2SerialOperation">Idle</dd></div>
+            </dl>
+            <a class="v2-button v2-button-secondary v2-button-block" href="/v2/settings">Connection settings</a>
+          </aside>
+        </div>
+
+        <section class="v2-panel v2-recent-panel" aria-labelledby="v2UploadsTitle">
+          <div class="v2-panel-heading">
+            <div>
+              <h2 id="v2UploadsTitle">Recent uploads</h2>
+              <p>Open artwork or inspect generated cutter files.</p>
+            </div>
+            <div class="v2-filter">
+              <label for="v2FileSearch">Filter</label>
+              <input id="v2FileSearch" type="search" placeholder="Filename">
+              <button class="v2-button v2-button-quiet updateFiles" type="button">Refresh</button>
+            </div>
+          </div>
+          <div id="v2FileEmpty" class="v2-empty-state">No uploads yet. Add an SVG above to begin.</div>
+          <ul id="fileList" class="v2-file-list" aria-live="polite"></ul>
+        </section>
+      </section>
+
+      <section class="v2-view" data-view="workbench">
+        <div id="v2WorkbenchLanding" class="v2-empty-workbench">
+          <h1>Cut workbench</h1>
+          <p>Choose artwork from New Cut or a saved project to begin.</p>
+          <a class="v2-button v2-button-primary" href="/v2">Choose artwork</a>
+        </div>
+      </section>
+
+      <section class="v2-view" data-view="projects">
+        <header class="v2-page-header">
+          <div>
+            <p class="v2-eyebrow">Reusable production</p>
+            <h1>Projects</h1>
+            <p>Open the latest revision, inspect history, or queue an immutable previous cut.</p>
+          </div>
+          <label class="v2-check"><input id="projectShowDeleted" type="checkbox"> Show deleted</label>
+        </header>
+        <div class="v2-toolbar">
+          <label class="v2-search"><span>Search projects</span><input id="v2ProjectSearch" type="search" placeholder="Name or tag"></label>
+          <button id="projectRefresh" class="v2-button v2-button-secondary" type="button">Refresh</button>
+        </div>
+        <div id="projectLibrary" class="project-library v2-project-library" aria-live="polite"></div>
+        <div id="projectRevisionList" class="v2-revision-list"></div>
+      </section>
+
+      <section class="v2-view" data-view="jobs">
+        <header class="v2-page-header">
+          <div>
+            <p class="v2-eyebrow">Production activity</p>
+            <h1>Jobs</h1>
+            <p>Active, queued, completed, failed, and cancelled transmissions.</p>
+          </div>
+          <button class="v2-button v2-button-secondary refreshJobs" type="button">Refresh</button>
+        </header>
+        <div class="v2-panel v2-table-panel">
+          <div class="v2-job-filters" role="group" aria-label="Filter jobs">
+            <button class="v2-filter-chip active" type="button" data-job-filter="all">All</button>
+            <button class="v2-filter-chip" type="button" data-job-filter="queued">Queued</button>
+            <button class="v2-filter-chip" type="button" data-job-filter="transmitting">Active</button>
+            <button class="v2-filter-chip" type="button" data-job-filter="completed">Completed</button>
+            <button class="v2-filter-chip" type="button" data-job-filter="failed">Failed</button>
+          </div>
+          <div class="v2-table-scroll">
+            <table class="v2-table">
+              <thead><tr><th>ID</th><th>File</th><th>Device</th><th>Port</th><th>Status</th><th>Created</th><th>Action</th></tr></thead>
+              <tbody id="jobHistoryBody"></tbody>
+            </table>
+          </div>
+          <details class="v2-technical-log">
+            <summary>Technical activity log</summary>
+            <div class="v2-log-toolbar"><button class="v2-button v2-button-quiet clearLog" type="button">Clear log</button></div>
+            <code id="statusLog" class="auto-scroll" aria-live="polite"></code>
+          </details>
+        </div>
+      </section>
+
+      <section class="v2-view" data-view="settings">
+        <header class="v2-page-header">
+          <div>
+            <p class="v2-eyebrow">Machine configuration</p>
+            <h1>Settings</h1>
+            <p>Connection, material, calibration, automation, and system controls.</p>
+          </div>
+        </header>
+
+        <div class="v2-settings-layout">
+          <nav class="v2-settings-nav" aria-label="Settings sections">
+            <button class="active" type="button" data-settings-target="connection">Cutter connection</button>
+            <button type="button" data-settings-target="materials">Material profiles</button>
+            <button type="button" data-settings-target="calibration">Calibration</button>
+            <button type="button" data-settings-target="automation">Power & automation</button>
+            <button type="button" data-settings-target="system">System</button>
+          </nav>
+
+          <div>
+            <section class="v2-panel v2-settings-panel" data-settings-panel="connection">
+              <h2>Cutter connection</h2>
+              <p>The port is opened only during a job or connection reset.</p>
+              <form id="plotterData" class="v2-form-grid">
+                <input id="fileName" name="file" type="hidden">
+                <label class="v2-field v2-span-2"><span>Serial port</span><select id="portList" class="portList" name="port"></select></label>
+                <label class="v2-check v2-span-2"><input id="useCustomPort" type="checkbox"> Use a custom port path</label>
+                <label id="v2CustomPortField" class="v2-field v2-span-2" hidden><span>Custom path</span><input id="customPort" name="custom_port" placeholder="/dev/serial/by-id/..."></label>
+                <label class="v2-field"><span>Baud rate</span><select id="baudRate" name="baudrate"><option value="9600">9600</option></select></label>
+                <label class="v2-field"><span>Device</span><select id="device" name="device"><option value="creation_1200">Creation PCut CT-1200</option><option value="7475a">HP 7475A</option><option value="mp4200">Graphtec MP4200</option></select></label>
+                <label class="v2-check v2-span-2"><input id="tasmota" name="tasmota" type="checkbox" checked> Switch Tasmota off when the job completes</label>
+              </form>
+              <div class="v2-inline-actions">
+                <button class="v2-button v2-button-secondary updatePorts" type="button">Refresh ports</button>
+                <button id="resetConnectionButton" class="v2-button v2-button-warning" type="button"><span class="resetConnectionLabel">Reset USB / COM</span></button>
+              </div>
+              <ol id="v2ResetPhases" class="v2-phase-log"></ol>
+              <p id="connectionResetStatus" class="v2-help" aria-live="polite"></p>
+            </section>
+
+            <section class="v2-panel v2-settings-panel" data-settings-panel="materials" hidden>
+              <h2>Material profiles</h2>
+              <p>Profiles store roll, spacing, preparation, weed, blade, and operator-panel suggestions.</p>
+              <div id="v2ProfileLibrary" class="v2-profile-library"></div>
+              <p class="v2-help">Create and verify profiles from Prepare while inspecting their effect on real artwork.</p>
+            </section>
+
+            <section class="v2-panel v2-settings-panel" data-settings-panel="calibration" hidden>
+              <h2>Cutter calibration</h2>
+              <p>Calibration is keyed to the stable serial port and selected device.</p>
+              <div id="v2CalibrationSummary"></div>
+              <p class="v2-help">Open an SVG in the workbench to create and measure the 100 × 100 mm calibration pattern.</p>
+            </section>
+
+            <section class="v2-panel v2-settings-panel" data-settings-panel="automation" hidden>
+              <h2>Power and automation</h2>
+              <form id="configData" class="v2-form-grid">
+                <label class="v2-field v2-span-2"><span>Plotter name</span><input id="plotter_name" name="plotter_name"></label>
+                <label class="v2-field v2-span-2"><span>Default port</span><input id="plotter_port" name="plotter_port"></label>
+                <label class="v2-field"><span>Default device</span><select id="plotter_device" name="plotter_device"><option value="creation_1200">Creation PCut CT-1200</option><option value="7475a">HP 7475A</option><option value="mp4200">Graphtec MP4200</option></select></label>
+                <label class="v2-field"><span>Default baud rate</span><select id="plotter_baudrate" name="plotter_baudrate"><option value="9600">9600</option></select></label>
+                <label class="v2-field"><span>Tasmota</span><select id="tasmota_enable" name="tasmota_enable"><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+                <label class="v2-field"><span>Tasmota IP</span><input id="tasmota_ip" name="tasmota_ip"></label>
+                <label class="v2-field"><span>Telegram token</span><input id="telegram_token" name="telegram_token"></label>
+                <label class="v2-field"><span>Telegram chat ID</span><input id="telegram_chatid" name="telegram_chatid"></label>
+              </form>
+              <button class="v2-button v2-button-primary saveConfig" type="button">Save configuration</button>
+            </section>
+
+            <section class="v2-panel v2-settings-panel v2-danger-zone" data-settings-panel="system" hidden>
+              <h2>System</h2>
+              <p>These controls affect the Raspberry Pi, not the cutter’s internal power or command buffer.</p>
+              <div class="v2-inline-actions">
+                <button class="v2-button v2-button-warning actionTasmota" type="button">Toggle Tasmota</button>
+                <button class="v2-button v2-button-danger actionReboot" type="button">Reboot Pi</button>
+                <button class="v2-button v2-button-danger actionPoweroff" type="button">Power off Pi</button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="v2LiveRegion" class="v2-visually-hidden" aria-live="assertive"></div>
+
+  <div id="modal-preview" class="uk-modal-container v2-workbench-modal" uk-modal="esc-close: true; bg-close: false">
+    <div class="uk-modal-dialog cut-workspace-dialog">
+      <header class="v2-workbench-header">
+        <div>
+          <p class="v2-eyebrow">Exact millimetre workspace</p>
+          <h1 id="previewModalTitle">Cut workbench</h1>
+          <p id="workspaceProjectStatus"></p>
+        </div>
+        <div class="v2-inline-actions">
+          <button id="v2Undo" class="v2-icon-button" type="button" disabled aria-label="Undo">↶</button>
+          <button id="v2Redo" class="v2-icon-button" type="button" disabled aria-label="Redo">↷</button>
+          <a class="v2-button v2-button-quiet" href="/v2">Close</a>
+        </div>
+      </header>
+      <div id="previewSpinner" class="v2-loading"><span class="v2-spinner"></span>Loading exact geometry…</div>
+      <p id="previewError" class="v2-alert v2-alert-error" style="display:none;"></p>
+      <div id="cutWorkspace" class="v2-workbench-grid" style="display:none;">
+        <nav class="v2-phase-rail" aria-label="Workspace phases">
+          <button class="active" type="button" data-workspace-phase="design"><span>1</span>Design</button>
+          <button type="button" data-workspace-phase="layout"><span>2</span>Layout</button>
+          <button type="button" data-workspace-phase="prepare"><span>3</span>Prepare</button>
+          <button type="button" data-workspace-phase="cut"><span>4</span>Cut</button>
+        </nav>
+
+        <section class="cut-workspace-stage">
+          <svg id="workspaceSvg" xmlns="http://www.w3.org/2000/svg" aria-label="Interactive exact cutter path preview">
+            <defs><pattern id="workspaceGrid" patternUnits="userSpaceOnUse"><path id="workspaceGridPath" fill="none"></path></pattern></defs>
+            <rect id="workspaceRoll" x="0" y="0" fill="url(#workspaceGrid)"></rect>
+            <g id="workspaceRulers"></g>
+            <g id="workspaceOriginalLayer"></g>
+            <g id="workspaceTravelsLayer"></g>
+            <g id="workspaceIntendedLayer"></g>
+            <g id="workspaceCutsLayer"></g>
+            <g id="workspaceInstancesLayer"></g>
+            <g id="workspaceMarkersLayer"></g>
+            <circle id="workspaceToolHead" r="2.2" fill="#f59e0b" stroke="#fff" stroke-width="0.55" style="display:none;"></circle>
+          </svg>
+          <div class="workspace-view-hint">Wheel to zoom · drag background to pan · drag a selected copy to position</div>
+          <div class="v2-canvas-toolbar">
+            <div class="v2-inline-actions">
+              <button id="workspaceFitDesign" class="v2-button v2-button-quiet" type="button">Fit cut</button>
+              <button id="workspaceFitRoll" class="v2-button v2-button-quiet" type="button">Fit roll</button>
+              <button id="workspaceResetView" class="v2-button v2-button-quiet" type="button">Reset view</button>
+            </div>
+            <div class="v2-legend" aria-label="Preview legend">
+              <span><i class="cut"></i>Cut</span><span><i class="travel"></i>Travel</span>
+              <span><i class="intended"></i>Intended</span><span><i class="weed"></i>Weed</span>
+            </div>
+          </div>
+          <div class="workspace-simulation" aria-label="Simulate path order">
+            <strong>Simulate path order</strong>
+            <button id="workspacePlay" class="v2-button v2-button-primary" type="button">Play</button>
+            <button id="workspacePause" class="v2-button v2-button-quiet" type="button">Pause</button>
+            <button id="workspaceRestart" class="v2-button v2-button-quiet" type="button">Restart</button>
+            <input id="workspaceProgress" type="range" min="0" max="1000" value="1000" aria-label="Simulation progress">
+            <output id="workspaceProgressLabel" for="workspaceProgress">100%</output>
+            <select id="workspaceSpeed" aria-label="Simulation speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="5">5×</option></select>
+          </div>
+        </section>
+
+        <aside class="cut-workspace-controls">
+          <form id="workspaceData">
+            <input id="workspaceFile" name="file" type="hidden">
+
+            <section class="v2-inspector-panel active" data-workspace-panel="design">
+              <h2>Design</h2>
+              <p>Select artwork or a copy, then set its physical size and transform.</p>
+              <div id="workspaceDesigns" class="workspace-designs"></div>
+              <div class="v2-inline-field">
+                <select id="workspaceAddDesignSelect" aria-label="SVG design to add"></select>
+                <button id="workspaceAddDesign" class="v2-button v2-button-secondary" type="button">Add design</button>
+              </div>
+              <div class="v2-form-grid">
+                <label class="v2-field"><span>Width (mm) 🔗</span><input id="workspaceWidth" class="workspace-transform" name="target_width_mm" type="number" min="0.1" step="0.1"></label>
+                <label class="v2-field"><span>Height (mm) 🔗</span><input id="workspaceHeight" class="workspace-transform" name="target_height_mm" type="number" min="0.1" step="0.1"></label>
+                <label class="v2-field"><span>Selected copy X</span><input id="workspaceOffsetX" class="workspace-transform" name="offset_x_mm" type="number" min="0" step="0.1"></label>
+                <label class="v2-field"><span>Selected copy Y</span><input id="workspaceOffsetY" class="workspace-transform" name="offset_y_mm" type="number" min="0" step="0.1"></label>
+                <label class="v2-field v2-span-2"><span>Rotation</span><select id="workspaceRotation" class="workspace-transform" name="rotation"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label>
+                <label class="v2-check"><input id="workspaceMirrorX" class="workspace-transform" name="mirror_x" type="checkbox"> Mirror X</label>
+                <label class="v2-check"><input id="workspaceMirrorY" class="workspace-transform" name="mirror_y" type="checkbox"> Mirror Y</label>
+              </div>
+            </section>
+
+            <section id="workspaceLayout" class="v2-inspector-panel" data-workspace-panel="layout">
+              <h2>Layout</h2>
+              <p>Arrange copies predictably across the loaded roll.</p>
+              <div class="v2-form-grid">
+                <label class="v2-field v2-span-2"><span>Loaded roll width (mm)</span><input id="workspaceRollWidth" class="workspace-transform" name="roll_width_mm" type="number" min="0.1" max="1200" step="0.1"></label>
+                <label class="v2-check v2-span-2"><input id="workspaceAutoLayout" class="workspace-layout" type="checkbox" checked> Automatic rows</label>
+                <label class="v2-field"><span>Edge margin (mm)</span><input id="workspaceEdgeMargin" class="workspace-layout" type="number" min="0" max="100" step="0.1" value="5"></label>
+                <label class="v2-field"><span>Copy spacing (mm)</span><input id="workspaceCopySpacing" class="workspace-layout" type="number" min="0" max="100" step="0.1" value="5"></label>
+                <label class="v2-check v2-span-2"><input id="workspaceAutoRotate" class="workspace-layout" type="checkbox"> Allow automatic 90° rotation</label>
+              </div>
+              <div id="v2LayoutMetrics" class="v2-metric-grid"></div>
+            </section>
+
+            <section class="v2-inspector-panel" data-workspace-panel="prepare">
+              <h2>Prepare</h2>
+              <details id="workspaceMaterialProfilePanel" open>
+                <summary>Material profile and operator checklist</summary>
+                <div class="v2-form-stack">
+                  <select id="workspaceMaterialProfile" aria-label="Material profile"></select>
+                  <textarea id="workspaceProfileNotes" rows="2" maxlength="2000" placeholder="Material notes"></textarea>
+                  <div class="v2-form-grid">
+                    <input id="workspaceSuggestedPressure" maxlength="100" placeholder="Panel pressure" aria-label="Suggested panel pressure">
+                    <input id="workspaceSuggestedSpeed" maxlength="100" placeholder="Panel speed" aria-label="Suggested panel speed">
+                  </div>
+                  <div id="workspaceOperatorChecklist" class="workspace-operator-checklist"></div>
+                  <div class="v2-button-grid">
+                    <button id="workspaceProfileNew" class="v2-button v2-button-quiet" type="button">New</button>
+                    <button id="workspaceProfileSave" class="v2-button v2-button-primary" type="button">Save</button>
+                    <button id="workspaceProfileVerify" class="v2-button v2-button-quiet" type="button">Verify test</button>
+                    <button id="workspaceProfileDelete" class="v2-button v2-button-danger" type="button">Delete</button>
+                    <button id="workspaceProfileExport" class="v2-button v2-button-quiet" type="button">Export JSON</button>
+                    <button id="workspaceProfileImport" class="v2-button v2-button-quiet" type="button">Import JSON</button>
+                    <input id="workspaceProfileImportFile" type="file" accept="application/json,.json" hidden>
+                  </div>
+                  <p id="workspaceProfileStatus" class="v2-help"></p>
+                </div>
+              </details>
+              <details id="workspacePreparation" open>
+                <summary>Safe cut preparation</summary>
+                <div class="v2-form-stack">
+                  <label class="v2-check"><input id="workspacePreparationEnabled" class="workspace-preparation" type="checkbox" checked> Enable safe preparation</label>
+                  <label class="v2-check"><input id="workspaceRemoveDuplicates" class="workspace-preparation" type="checkbox" checked> Remove duplicate cuts</label>
+                  <label class="v2-check"><input id="workspaceInsideFirst" class="workspace-preparation" type="checkbox" checked> Cut inside contours first</label>
+                  <label class="v2-check"><input id="workspaceMinimizeTravel" class="workspace-preparation" type="checkbox" checked> Minimize travel</label>
+                  <details><summary>Advanced geometry changes</summary>
+                    <div class="v2-form-grid">
+                      <label class="v2-check"><input id="workspaceMerge" class="workspace-preparation" type="checkbox"> Merge paths</label>
+                      <input id="workspaceMergeTolerance" class="workspace-preparation" type="number" min="0.001" max="1" step="0.001" value="0.05" aria-label="Merge tolerance">
+                      <label class="v2-check"><input id="workspaceSimplify" class="workspace-preparation" type="checkbox"> Simplify</label>
+                      <input id="workspaceSimplifyTolerance" class="workspace-preparation" type="number" min="0.001" max="1" step="0.001" value="0.05" aria-label="Simplification tolerance">
+                    </div>
+                  </details>
+                  <label class="v2-check"><input id="workspaceShowOriginal" type="checkbox"> Show original overlay</label>
+                </div>
+              </details>
+              <details id="workspaceCuttingAids">
+                <summary>Vinyl-cutting aids</summary>
+                <div class="v2-form-grid">
+                  <label class="v2-check v2-span-2"><input id="workspaceWeedEnabled" class="workspace-cutting-aid" type="checkbox"> Add weeding geometry</label>
+                  <label class="v2-field"><span>Border around</span><select id="workspaceWeedBorderMode" class="workspace-cutting-aid"><option value="layout">Complete layout</option><option value="copy">Each copy</option></select></label>
+                  <label class="v2-field"><span>Border margin (mm)</span><input id="workspaceWeedMargin" class="workspace-cutting-aid" type="number" min="0" max="100" step="0.1" value="5"></label>
+                  <label class="v2-check"><input id="workspaceWeedHorizontal" class="workspace-cutting-aid" type="checkbox"> Horizontal weed lines</label>
+                  <label class="v2-check"><input id="workspaceWeedVertical" class="workspace-cutting-aid" type="checkbox"> Vertical weed lines</label>
+                  <label class="v2-check"><input id="workspaceOvercutEnabled" class="workspace-cutting-aid" type="checkbox"> Overcut</label>
+                  <input id="workspaceOvercut" class="workspace-cutting-aid" type="number" min="0.01" max="10" step="0.05" value="1" aria-label="Overcut distance">
+                  <label class="v2-check"><input id="workspaceBladeCompensation" class="workspace-cutting-aid" type="checkbox"> Blade compensation</label>
+                  <input id="workspaceBladeOffset" class="workspace-cutting-aid" type="number" min="0.01" max="5" step="0.01" value="0.25" aria-label="Blade offset">
+                  <label class="v2-check v2-span-2"><input id="workspaceShowIntended" type="checkbox" checked> Show intended contour</label>
+                  <button id="workspaceTestPattern" class="v2-button v2-button-secondary v2-span-2" type="button">Create compensation test pattern</button>
+                </div>
+              </details>
+              <details id="workspaceCalibrationPanel">
+                <summary>Cutter X/Y calibration</summary>
+                <div class="v2-form-grid">
+                  <p id="workspaceCalibrationKey" class="v2-help v2-span-2"></p>
+                  <label class="v2-check v2-span-2"><input id="workspaceCalibrationEnabled" type="checkbox"> Apply accepted correction</label>
+                  <input id="workspaceMeasuredX" type="number" min="90.91" max="111.11" step="0.01" placeholder="Measured X mm" aria-label="Measured X">
+                  <input id="workspaceMeasuredY" type="number" min="90.91" max="111.11" step="0.01" placeholder="Measured Y mm" aria-label="Measured Y">
+                  <p id="workspaceCalibrationResult" class="v2-span-2"></p>
+                  <button id="workspaceCalibrationPattern" class="v2-button v2-button-secondary v2-span-2" type="button">Create 100 mm calibration square</button>
+                  <button id="workspaceCalibrationCalculate" class="v2-button v2-button-quiet" type="button">Calculate</button>
+                  <button id="workspaceCalibrationAccept" class="v2-button v2-button-primary" type="button" disabled>Accept correction</button>
+                </div>
+              </details>
+            </section>
+
+            <section class="v2-inspector-panel" data-workspace-panel="cut">
+              <h2>Cut</h2>
+              <p id="workspaceReadOnly" class="v2-alert v2-alert-info" style="display:none;">Uploaded HPGL is exact and read-only.</p>
+              <div id="v2Readiness" class="v2-readiness"></div>
+              <p id="previewInfo"></p>
+              <div id="workspacePreflightStats" class="workspace-preflight-stats" style="display:none;"></div>
+              <p id="previewWarning" class="v2-alert v2-alert-warning" style="display:none;"></p>
+              <p id="workspacePreparing" class="v2-help" style="display:none;">Preparing exact cutter path…</p>
+              <p id="workspaceBoundsError" class="v2-alert v2-alert-error" style="display:none;"></p>
+              <div class="v2-form-stack">
+                <label class="v2-check"><input id="workspaceTravels" type="checkbox"> Show pen-up travel</label>
+                <label class="v2-check"><input id="workspaceOrder" type="checkbox"> Show path order</label>
+                <button id="workspaceGenerate" class="v2-button v2-button-primary v2-button-large lock-edit" type="button">Generate HPGL</button>
+                <p id="v2GenerateReason" class="v2-help"></p>
+                <button id="v2SendCut" class="v2-button v2-button-success v2-button-large" type="button" disabled>Send to cutter</button>
+                <p id="v2GeneratedOutput" class="v2-help">Generate the current exact path before sending.</p>
+                <button id="workspaceSaveProject" class="v2-button v2-button-secondary" type="button">Save as project</button>
+              </div>
+            </section>
+          </form>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+  <dialog id="v2ProjectSaveDialog" class="v2-dialog">
+    <form method="dialog" id="v2ProjectSaveForm">
+      <h2>Save project</h2>
+      <label class="v2-field"><span>Name</span><input id="v2ProjectName" maxlength="200" required></label>
+      <label class="v2-field"><span>Notes</span><textarea id="v2ProjectNotes" rows="4" maxlength="2000"></textarea></label>
+      <label class="v2-field"><span>Tags</span><input id="v2ProjectTags" placeholder="vinyl, sign, customer"></label>
+      <div class="v2-inline-actions v2-dialog-actions">
+        <button class="v2-button v2-button-quiet" value="cancel">Cancel</button>
+        <button id="v2ProjectSaveConfirm" class="v2-button v2-button-primary" value="default">Save project</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="modal-projects" uk-modal style="display:none;">
+    <div class="uk-modal-dialog"></div>
+  </div>
+
+  <script src="{{ url_for('static', filename='v2/vendor.js') }}?v={{ version }}"></script>
+  <script src="{{ url_for('static', filename='main.js') }}?v={{ version }}"></script>
+  <script src="{{ url_for('static', filename='utility.js') }}?v={{ version }}"></script>
+  <script src="{{ url_for('static', filename='v2/app.js') }}?v={{ version }}"></script>
+</body>
+</html>

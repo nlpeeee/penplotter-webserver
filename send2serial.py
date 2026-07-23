@@ -209,6 +209,7 @@ def _send_creation_1200_unlocked(socketio, hpglfile, port, cancel_check=None):
             total_bytes_written += len(data)
             if input_bytes:
                 percent = 100.0 * total_bytes_written / input_bytes
+                globals.print_progress = percent
                 print(f'{percent:.2f}%, {total_bytes_written} bytes written.')
                 socketio.emit('status_log', {'data': f'{percent:.2f}%, {total_bytes_written} bytes written.'})
                 socketio.emit('print_progress', {'data': f'{percent:.2f}'})
@@ -327,6 +328,7 @@ def sendToPlotter(socketio, hpglfile, port = 'COM3', baud = 9600, plotter = '747
 
         if input_bytes != None:
             percent = 100.0 * total_bytes_written/input_bytes
+            globals.print_progress = percent
             print(f'{percent:.2f}%, {total_bytes_written} byte written.')
             socketio.emit('status_log', {'data': f'{percent:.2f}%, {total_bytes_written} byte written.'})
             socketio.emit('print_progress', {'data': f'{percent:.2f}'})

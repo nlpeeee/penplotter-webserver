@@ -61,6 +61,7 @@ def _execute_job(job):
     result = None
     error_msg = None
     globals.active_job_id = job_id
+    globals.print_progress = 0.0
     try:
         if not jobqueue.is_cancel_requested(job_id):
             result = send2serial.sendToPlotter(
@@ -88,6 +89,7 @@ def _execute_job(job):
 
     globals.printing = False
     globals.active_job_id = None
+    globals.print_progress = 100.0 if status == 'completed' else 0.0
 
     jobqueue.update_job_status(job_id, status, error_msg)
     socketio.emit('status_log', {'data': f'[Job {job_id}] {status.capitalize()}.'})
@@ -907,11 +909,8 @@ def svg_dimensions(filename):
         'max_height_mm': 20000,
     })
 
-@app.route('/')
-def index():
-    files = make_tree(app.config['UPLOAD_PATH'])
-
-    configuration = {
+def _configuration_payload():
+    return {
         'telegram_token': config['telegram']['telegram_token'],
         'telegram_chatid': config['telegram']['telegram_chatid'],
         'tasmota_enable': config['tasmota']['tasmota_enable'],
@@ -922,25 +921,119 @@ def index():
         'plotter_baudrate': config['plotter']['baudrate'],
     }
 
+
+def _asset_version(extra_assets=()):
     try:
-        version = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'],
-                                          stderr=subprocess.DEVNULL).decode().strip()
+        version = subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
     except Exception:
         version = '1'
 
-    # Include the live asset timestamp as deployments may update files without
-    # creating a git commit on the plotter. This prevents browsers retaining an
-    # older UI under the same commit-based cache key.
+    assets = (
+        'main.js', 'utility.js', 'css/main.css', 'img/pcp-logo.png',
+    ) + tuple(extra_assets)
     try:
         asset_mtime = max(
             int(os.path.getmtime(os.path.join(app.static_folder, asset)))
-            for asset in ('main.js', 'utility.js', 'css/main.css', 'img/pcp-logo.png')
+            for asset in assets
         )
         version = f'{version}-{asset_mtime}'
     except OSError:
         pass
+    return version
 
-    return render_template('index.html', files=files, configuration=configuration, version=version)
+
+def _render_v1():
+    return render_template(
+        'index.html',
+        files=make_tree(app.config['UPLOAD_PATH']),
+        configuration=_configuration_payload(),
+        version=_asset_version(),
+    )
+
+
+def _render_v2(view='new-cut'):
+    return render_template(
+        'v2.html',
+        configuration=_configuration_payload(),
+        initial_view=view,
+        version=_asset_version(('v2/app.js', 'v2/app.css')),
+    )
+
+
+@app.route('/')
+def index():
+    if os.environ.get('PCP_UI_DEFAULT', 'v1').lower() == 'v2':
+        return _render_v2('new-cut')
+    return _render_v1()
+
+
+@app.route('/v1')
+def v1_index():
+    return _render_v1()
+
+
+@app.route('/v2')
+def v2_index():
+    return _render_v2('new-cut')
+
+
+@app.route('/v2/<view>')
+def v2_view(view):
+    if view not in {'workbench', 'projects', 'jobs', 'settings'}:
+        abort(404)
+    return _render_v2(view)
+
+
+@app.route('/api/ui-state')
+def ui_state():
+    configured_port = config['plotter'].get('port', '')
+    detected_ports = send2serial.listComPorts().get('content', [])
+    recent_jobs = jobqueue.get_recent_jobs()
+    active_job = next(
+        (
+            job for job in recent_jobs
+            if job['id'] == globals.active_job_id
+            or job.get('status') == 'transmitting'
+        ),
+        None,
+    )
+    queue_count = jobqueue.get_queue_count()
+
+    if globals.reset_in_progress:
+        port_state, serial_operation = 'resetting', 'reset'
+    elif globals.active_job_id is not None:
+        port_state, serial_operation = 'busy', 'cut'
+    elif configured_port and configured_port in detected_ports:
+        port_state, serial_operation = 'available', 'idle'
+    elif configured_port:
+        port_state, serial_operation = 'missing', 'idle'
+    else:
+        port_state, serial_operation = 'unknown', 'idle'
+    if globals.last_connection_error and port_state not in {'busy', 'resetting'}:
+        port_state = 'error'
+
+    if active_job:
+        active_job = dict(active_job)
+        active_job['progress'] = round(float(globals.print_progress), 2)
+
+    return jsonify({
+        'plotter': {
+            'name': config['plotter'].get('name', 'Plotter'),
+            'device': config['plotter'].get('device', 'creation_1200'),
+            'baudrate': config['plotter'].get('baudrate', '9600'),
+            'configured_port': configured_port,
+            'port_state': port_state,
+            'detected_ports': detected_ports,
+            'serial_operation': serial_operation,
+            'reset_phase': globals.reset_phase,
+            'last_connection_error': globals.last_connection_error,
+        },
+        'active_job': active_job,
+        'queue_count': queue_count,
+    })
 
 
 @app.route('/license')
@@ -1152,6 +1245,9 @@ def reset_plotter_connection():
 
     def emit_phase(item):
         phases.append(item)
+        globals.reset_phase = item.get('phase')
+        if item.get('status') == 'error':
+            globals.last_connection_error = item.get('message')
         socketio.emit('connection_reset', item)
         socketio.emit('status_log', {'data': item['message']})
 
@@ -1169,6 +1265,7 @@ def reset_plotter_connection():
         reset_phases = serial_control.reset_usb_serial(
             selected_port, configured_port, baudrate=baudrate, progress=emit_phase
         )
+        globals.last_connection_error = None
         _emit_job_update()
         return jsonify({'status': 'ready', 'port': selected_port, 'phases': phases})
     except serial_control.SerialResetError as exc:
@@ -1178,6 +1275,8 @@ def reset_plotter_connection():
     finally:
         with globals.active_serial_lock:
             globals.reset_in_progress = False
+            if globals.reset_phase != 'error':
+                globals.reset_phase = None
 
 # Start reboot sequence
 @app.route('/action_reboot', methods=['GET', 'POST'])
