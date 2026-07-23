@@ -5,3 +5,6 @@ node_modules/*
 config.ini
 test/*
 jobs.db
+/projects/
+/spool/
+/tmp/
