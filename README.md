@@ -34,6 +34,18 @@ After install, open a browser and reach for:
 http://{{your Raspberry Pi address}}:5000
 ```
 
+PCP currently provides two permanent interfaces against the same backend and
+runtime data:
+
+- `/v1` — the frozen PCP V1 production interface.
+- `/v2` — the PCP V2 preview, with stable navigation and a guided workbench.
+
+The root route remains V1 by default. After V2 has been accepted, set the
+service environment variable `PCP_UI_DEFAULT=v2` and restart
+`webplotter.service`. `/v1` remains available regardless of that setting, so
+rollback requires only setting `PCP_UI_DEFAULT=v1` and restarting the service.
+No database or cutter reconfiguration is involved.
+
 Optional:
 Configure options in *config.ini* (copy from *config.ini.sample*) using the web interface to set:
 - Serial port and device profile.
@@ -192,7 +204,32 @@ project/revision links are retained in job history.
 
 ```bash
 python -m unittest discover -s tests -v
+npm install
+npx playwright install chromium
+npm run build
+npm run test:browser
 ```
+
+The browser suite exercises PCP V2 at 1440 × 900, 1024 × 768, 768 × 1024,
+and 390 × 844. It also checks the real SVG preview/generation flow, V1 route
+isolation, critical WCAG A/AA rules, and committed visual baselines.
+
+## PCP V2
+
+V2 keeps the same canonical millimetre geometry, HPGL generation, project,
+queue, and serial interfaces as V1. It adds permanent New Cut, Workbench,
+Projects, Jobs, and Settings routes; a global cutter/job status bar; guided
+Design, Layout, Prepare, and Cut phases; undo/redo for manifest changes; and a
+single project-save sheet. HPGL generation and physical transmission remain
+separate actions. Any geometry edit invalidates generated output and blocks
+sending until the exact path is regenerated.
+
+Browser dependencies used by V2 are compiled into `static/v2/`, so an offline
+Pi continues to serve the full interface. V1 keeps its own template and assets;
+V2-specific styles and scripts do not load on `/v1`.
+
+See [the V1 release record](docs/releases/v1.0.0.md) and
+[the V2 operator/deployment notes](docs/pcp-v2.md).
 
 ## ToDO
 
