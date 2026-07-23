@@ -21,6 +21,7 @@ class BrandingTests(unittest.TestCase):
         self.assertEqual(html.count('alt="PCP logo"'), 2)
         self.assertIn('img/pcp-logo.png?v=', html)
         self.assertNotIn('img/user.png', html)
+        self.assertNotIn('class="uk-text-center uk-margin-remove-vertical text-light">PCP</h4>', html)
         self.assertNotIn('Web Plotter', html)
         self.assertNotIn('Plotter Webserver', html)
 
