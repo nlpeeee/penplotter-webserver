@@ -8,3 +8,5 @@ jobs.db
 /projects/
 /spool/
 /tmp/
+/test-results/
+/playwright-report/
