@@ -48,6 +48,13 @@ class BrandingTests(unittest.TestCase):
         self.assertGreater(os.path.getsize(logo_path), 1000)
         self.assertFalse(os.path.exists(obsolete_logo_path))
 
+    def test_project_library_and_workspace_save_controls_are_rendered(self):
+        html = self.client.get('/').get_data(as_text=True)
+        self.assertIn('id="modal-projects"', html)
+        self.assertIn('class="actionOpenProjects"', html)
+        self.assertIn('id="workspaceSaveProject"', html)
+        self.assertIn('id="projectRevisionList"', html)
+
 
 if __name__ == '__main__':
     unittest.main()

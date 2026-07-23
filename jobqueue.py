@@ -7,8 +7,11 @@ port for the duration of each job, preventing concurrent writes.
 
 import sqlite3
 import os
+import tempfile
+import uuid
 
 DB_PATH = os.environ.get('WEBPLOT_DB', 'jobs.db')
+SPOOL_PATH = os.environ.get('PCP_SPOOL_DIR', 'spool')
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -45,6 +48,14 @@ def init_db():
             conn.execute(
                 "ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0"
             )
+        migrations = {
+            "display_file": "ALTER TABLE jobs ADD COLUMN display_file TEXT",
+            "project_id": "ALTER TABLE jobs ADD COLUMN project_id TEXT",
+            "project_revision": "ALTER TABLE jobs ADD COLUMN project_revision INTEGER",
+        }
+        for column, statement in migrations.items():
+            if column not in columns:
+                conn.execute(statement)
         conn.execute(
             """
             UPDATE jobs
@@ -58,14 +69,54 @@ def init_db():
         conn.close()
 
 
-def enqueue_job(file, port, baudrate='9600', device='7475a', tasmota='off'):
+def snapshot_for_queue(source_file):
+    """Atomically preserve the exact queued bytes independently of their source."""
+    if not os.path.isfile(source_file):
+        raise FileNotFoundError("The selected HPGL file does not exist.")
+    os.makedirs(SPOOL_PATH, exist_ok=True)
+    extension = os.path.splitext(source_file)[1].lower() or ".hpgl"
+    destination = os.path.abspath(os.path.join(SPOOL_PATH, str(uuid.uuid4()) + extension))
+    temporary = tempfile.NamedTemporaryFile(
+        prefix=".pcp-spool-", suffix=".tmp",
+        dir=os.path.abspath(SPOOL_PATH), delete=False,
+    )
+    try:
+        with open(source_file, "rb") as source:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                temporary.write(chunk)
+        temporary.flush()
+        os.fsync(temporary.fileno())
+        temporary.close()
+        os.replace(temporary.name, destination)
+        return destination
+    finally:
+        if not temporary.closed:
+            temporary.close()
+        if os.path.exists(temporary.name):
+            os.unlink(temporary.name)
+
+
+def enqueue_job(
+    file, port, baudrate='9600', device='7475a', tasmota='off',
+    display_file=None, project_id=None, project_revision=None,
+):
     """Insert a new job in *queued* state and return its row id."""
     conn = _connect()
     try:
         cur = conn.execute(
-            "INSERT INTO jobs (file, port, baudrate, device, tasmota, status) "
-            "VALUES (?, ?, ?, ?, ?, 'queued')",
-            (file, port, str(baudrate), device, tasmota),
+            """
+            INSERT INTO jobs (
+                file, display_file, port, baudrate, device, tasmota,
+                project_id, project_revision, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued')
+            """,
+            (
+                file, display_file or os.path.basename(file), port, str(baudrate),
+                device, tasmota, project_id, project_revision,
+            ),
         )
         conn.commit()
         return cur.lastrowid

@@ -171,6 +171,23 @@ in the workspace, applied immediately before HPGL quantization, and included
 in calibrated output filenames and generation metadata. Calibration-pattern
 transmission requires an explicit media/tool confirmation.
 
+## Saved Projects
+
+The **Saved Projects** library stores self-contained, explicitly numbered
+revisions. Source SVGs are copied into `projects/<uuid>/assets/` under their
+SHA-256 names, and each revision keeps immutable HPGL plus a generated
+thumbnail, notes, tags, profile data, layout, preparation settings, and the
+calibration snapshot. Deleting the original upload therefore does not affect a
+project.
+
+Opening a historical revision restores its exact workspace; further edits
+autosave only to a recovery draft and create a new immutable revision when
+deliberately saved. **Cut again** snapshots the stored HPGL byte-for-byte into
+the spool before queueing it. Normal upload cuts are spooled too, so deleting
+an upload or permanently purging a project cannot break a queued job. Project
+deletion is recoverable until the separate permanent purge action is used, and
+project/revision links are retained in job history.
+
 ## Running Tests
 
 ```bash
@@ -194,6 +211,7 @@ python -m unittest discover -s tests -v
 - [x] Multiple SVG copies and deterministic roll layout
 - [x] Weeding, overcut, drag-blade compensation, and guarded test pattern
 - [x] Material profiles, operator checklist, and per-cutter X/Y calibration
+- [x] Self-contained saved projects, immutable revisions, drafts, and exact recuts
 
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.

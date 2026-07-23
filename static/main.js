@@ -477,7 +477,12 @@ function renderJobHistory(jobs) {
   }
   jobs.forEach(function(job) {
     var badge = _statusBadge[job.status] || 'uk-label';
-    var fname = job.file ? job.file.split('/').pop() : '';
+    var fname = job.display_file || (job.file ? job.file.split('/').pop() : '');
+    var projectLink = job.project_id && job.project_revision
+      ? '<br><button class="uk-button uk-button-text project-history-open" data-project-id="' +
+        workspaceEscape(job.project_id) + '" data-revision="' + job.project_revision +
+        '">Project revision ' + job.project_revision + '</button>'
+      : '';
     var action = '';
     if (job.status === 'queued') {
       action = `<a href="#" class="cancelJob uk-button uk-button-danger uk-button-small" data-job-id="${job.id}">Cancel</a>`;
@@ -486,7 +491,7 @@ function renderJobHistory(jobs) {
     }
     tbody.append(`<tr>
       <td>${job.id}</td>
-      <td>${$('<div/>').text(fname).html()}</td>
+      <td>${$('<div/>').text(fname).html()}${projectLink}</td>
       <td>${$('<div/>').text(job.device).html()}</td>
       <td>${$('<div/>').text(job.port).html()}</td>
       <td><span class="${badge}">${job.status}</span></td>
@@ -530,7 +535,9 @@ var cutterWorkspace = {
   serverPreview: null, preparationTimer: null, preparationRequestId: 0,
   manifestItems: [], selectedItemIndex: 0, selectedInstanceId: null,
   profiles: [], selectedProfileId: 'unprofiled',
-  calibration: null, calibrationCandidate: null
+  calibration: null, calibrationCandidate: null,
+  projectContext: null, projectMetadata: null, projectDirty: false,
+  projectDraftTimer: null, restoringProject: false
 };
 
 function workspaceNumber(selector, fallback) {
@@ -607,6 +614,9 @@ function workspaceRequestData() {
     items: cutterWorkspace.manifestItems.map(function(item) {
       return {
         filename: item.filename,
+        project_asset_id: item.projectAssetId || undefined,
+        natural_width_mm: item.naturalWidth,
+        natural_height_mm: item.naturalHeight,
         target_width_mm: item.targetWidth,
         target_height_mm: item.targetHeight,
         rotation: item.rotation || 0,
@@ -656,8 +666,18 @@ function workspaceRequestData() {
     calibration: {
       enabled: jQuery('#workspaceCalibrationEnabled').is(':checked'),
       serial_port: workspaceCutterKey().serial_port,
-      device: workspaceCutterKey().device
-    }
+      device: workspaceCutterKey().device,
+      revision_snapshot: !!(
+        cutterWorkspace.projectContext
+        && cutterWorkspace.projectContext.useCalibrationSnapshot
+      )
+    },
+    project_context: cutterWorkspace.projectContext ? {
+      project_id: cutterWorkspace.projectContext.projectId,
+      revision_number: cutterWorkspace.projectContext.revisionNumber,
+      draft_snapshot: !!cutterWorkspace.projectContext.useDraftSnapshot,
+      profile_snapshot: !!cutterWorkspace.projectContext.useProfileSnapshot
+    } : undefined
   };
 }
 
@@ -784,11 +804,16 @@ function workspaceRenderCalibration(calibration) {
   cutterWorkspace.calibration = calibration || null;
   var key = workspaceCutterKey();
   jQuery('#workspaceCalibrationKey').text(
-    (key.serial_port || 'No serial port selected') + ' • ' + key.device
+    ((calibration && calibration.serial_port) || key.serial_port || 'No serial port selected') +
+    ' • ' + ((calibration && calibration.device) || key.device)
   );
   jQuery('#workspaceCalibrationEnabled')
     .prop('checked', !!(calibration && calibration.enabled))
-    .prop('disabled', !calibration || !calibration.accepted);
+    .prop(
+      'disabled',
+      (!calibration || !calibration.accepted)
+      && !(cutterWorkspace.projectContext && cutterWorkspace.projectContext.useCalibrationSnapshot)
+    );
   if (calibration) {
     jQuery('#workspaceMeasuredX').val(Number(calibration.measured_x_mm).toFixed(2));
     jQuery('#workspaceMeasuredY').val(Number(calibration.measured_y_mm).toFixed(2));
@@ -814,6 +839,346 @@ function workspaceLoadCalibration() {
     workspaceRenderCalibration(response.data.calibration);
     return response.data.calibration;
   });
+}
+
+function workspaceApplySavedManifest(manifest) {
+  if (!manifest) return;
+  jQuery('#workspaceRollWidth').val(manifest.roll_width_mm || 1200);
+  var layout = manifest.layout || {};
+  jQuery('#workspaceAutoLayout').prop('checked', layout.automatic !== false);
+  jQuery('#workspaceEdgeMargin').val(layout.edge_margin_mm == null ? 5 : layout.edge_margin_mm);
+  jQuery('#workspaceCopySpacing').val(layout.spacing_mm == null ? 5 : layout.spacing_mm);
+  jQuery('#workspaceAutoRotate').prop('checked', !!layout.allow_rotation);
+  var preparation = manifest.preparation || {};
+  jQuery('#workspacePreparationEnabled').prop('checked', preparation.enabled !== false);
+  jQuery('#workspaceRemoveDuplicates').prop('checked', preparation.remove_duplicates !== false);
+  jQuery('#workspaceInsideFirst').prop('checked', preparation.inside_first !== false);
+  jQuery('#workspaceMinimizeTravel').prop('checked', preparation.minimize_travel !== false);
+  jQuery('#workspaceMerge').prop('checked', !!preparation.merge_enabled);
+  jQuery('#workspaceMergeTolerance').val(preparation.merge_tolerance_mm == null ? 0.05 : preparation.merge_tolerance_mm);
+  jQuery('#workspaceSimplify').prop('checked', !!preparation.simplify_enabled);
+  jQuery('#workspaceSimplifyTolerance').val(preparation.simplify_tolerance_mm == null ? 0.05 : preparation.simplify_tolerance_mm);
+  var aids = manifest.cutting_aids || {};
+  jQuery('#workspaceWeedEnabled').prop('checked', !!aids.weed_enabled);
+  jQuery('#workspaceWeedBorderMode').val(aids.weed_border_mode || 'layout');
+  jQuery('#workspaceWeedMargin').val(aids.weed_margin_mm == null ? 5 : aids.weed_margin_mm);
+  jQuery('#workspaceWeedHorizontal').prop('checked', !!aids.weed_horizontal);
+  jQuery('#workspaceWeedVertical').prop('checked', !!aids.weed_vertical);
+  jQuery('#workspaceOvercutEnabled').prop('checked', !!aids.overcut_enabled);
+  jQuery('#workspaceOvercut').val(aids.overcut_mm == null ? 1 : aids.overcut_mm);
+  jQuery('#workspaceBladeCompensation').prop('checked', !!aids.blade_compensation_enabled);
+  jQuery('#workspaceBladeOffset').val(aids.blade_offset_mm == null ? 0.25 : aids.blade_offset_mm);
+  cutterWorkspace.selectedProfileId = manifest.material_profile_id || 'unprofiled';
+  cutterWorkspace.manifestItems = (manifest.items || []).map(function(item) {
+    return {
+      filename: item.filename,
+      projectAssetId: item.project_asset_id || null,
+      naturalWidth: Number(item.natural_width_mm || item.target_width_mm),
+      naturalHeight: Number(item.natural_height_mm || item.target_height_mm),
+      targetWidth: Number(item.target_width_mm),
+      targetHeight: Number(item.target_height_mm),
+      rotation: Number(item.rotation || 0),
+      mirrorX: !!item.mirror_x,
+      mirrorY: !!item.mirror_y,
+      copies: Number(item.copies || 1),
+      placements: item.placements || []
+    };
+  });
+  cutterWorkspace.selectedItemIndex = 0;
+  var snapshot = manifest.calibration_snapshot || {};
+  jQuery('#workspaceCalibrationEnabled').prop('checked', !!snapshot.enabled);
+  workspaceRenderCalibration(snapshot.enabled || snapshot.serial_port ? snapshot : null);
+  workspaceRenderDesignList();
+  workspaceSyncControlsFromItem();
+}
+
+function workspaceSaveProject() {
+  if (!cutterWorkspace.serverPreview || cutterWorkspace.serverPreview.valid === false) {
+    notify('Wait for a valid exact preview before saving the project.', 'warning');
+    return;
+  }
+  var save = function(name, newNotes, newTags) {
+    var requestData = workspaceRequestData();
+    requestData.geometry_hash = cutterWorkspace.serverPreview.geometry_hash;
+    var metadata = cutterWorkspace.projectMetadata || {};
+    var body = {
+      project: {
+        name: name || metadata.name,
+        notes: newNotes == null ? (metadata.notes || '') : newNotes,
+        tags: newTags == null ? (metadata.tags || []) : newTags
+      },
+      workspace: requestData
+    };
+    var existing = cutterWorkspace.projectContext;
+    var url = existing
+      ? '/api/projects/' + encodeURIComponent(existing.projectId) + '/revisions'
+      : '/api/projects';
+    var button = jQuery('#workspaceSaveProject').prop('disabled', true).text('Saving…');
+    axios.post(url, body).then(function(response) {
+      var revision = response.data;
+      cutterWorkspace.projectContext = {
+        projectId: revision.project_id,
+        revisionNumber: revision.revision_number,
+        useCalibrationSnapshot: true,
+        useProfileSnapshot: true
+      };
+      cutterWorkspace.projectMetadata = revision.project;
+      cutterWorkspace.projectDirty = false;
+      (revision.manifest.items || []).forEach(function(item, index) {
+        if (cutterWorkspace.manifestItems[index]) {
+          cutterWorkspace.manifestItems[index].projectAssetId = item.project_asset_id;
+        }
+      });
+      jQuery('#workspaceProjectStatus').text(
+        revision.project.name + ' • saved revision ' + revision.revision_number
+      );
+      jQuery('#workspaceSaveProject').text('Save new revision');
+      notify('Saved immutable project revision ' + revision.revision_number + '.', 'success');
+    }).catch(function(error) {
+      notify(error.response && error.response.data ? error.response.data.error : error.message, 'danger');
+    }).then(function() {
+      button.prop('disabled', false);
+      if (cutterWorkspace.projectContext) button.text('Save new revision');
+      else button.text('Save as project');
+    });
+  };
+  if (cutterWorkspace.projectContext) {
+    save(cutterWorkspace.projectMetadata && cutterWorkspace.projectMetadata.name);
+  } else {
+    UIkit.modal.prompt('Project name', cutterWorkspace.filename.replace(/\.[^.]+$/, ''))
+      .then(function(name) {
+        if (!name) return null;
+        return UIkit.modal.prompt('Project notes (optional)', '').then(function(notes) {
+          return {name: name, notes: notes || ''};
+        });
+      }).then(function(values) {
+        if (!values) return null;
+        return UIkit.modal.prompt('Tags, separated by commas (optional)', '').then(function(tags) {
+          values.tags = (tags || '').split(',').map(function(tag) { return tag.trim(); }).filter(Boolean);
+          return values;
+        });
+      }).then(function(values) {
+        if (values) save(values.name, values.notes, values.tags);
+      });
+  }
+}
+
+function workspaceOpenProjectRevision(projectId, revisionNumber, draftManifest) {
+  var revisionRequest = draftManifest
+    ? axios.get('/api/projects/' + encodeURIComponent(projectId))
+    : axios.get(
+      '/api/projects/' + encodeURIComponent(projectId) +
+      '/revisions/' + encodeURIComponent(revisionNumber)
+    );
+  revisionRequest.then(function(response) {
+    var revision = draftManifest ? null : response.data;
+    var project = draftManifest ? response.data : revision.project;
+    var manifest = draftManifest || revision.manifest;
+    var baseRevision = revisionNumber || (
+      project.revisions && project.revisions.length
+        ? project.revisions[0].revision_number : 1
+    );
+    var first = manifest.items && manifest.items[0];
+    if (!first || !first.project_asset_id) throw new Error('Project has no SVG source asset.');
+    UIkit.modal('#modal-projects').hide();
+    previewFile(first.filename, {
+      sourceUrl: '/api/project-assets/' + encodeURIComponent(first.project_asset_id) + '/workspace',
+      manifest: manifest,
+      projectContext: {
+        projectId: projectId,
+        revisionNumber: baseRevision,
+        useCalibrationSnapshot: true,
+        useProfileSnapshot: true,
+        useDraftSnapshot: !!draftManifest
+      },
+      projectMetadata: project,
+      isDraft: !!draftManifest
+    });
+  }).catch(function(error) {
+    notify(error.response && error.response.data ? error.response.data.error : error.message, 'danger');
+  });
+}
+
+function projectCutAgain(projectId, revisionNumber, confirmed) {
+  var key = workspaceCutterKey();
+  if (!key.serial_port) {
+    notify('Select a serial port before cutting a saved project.', 'danger');
+    return Promise.resolve();
+  }
+  return axios.post(
+    '/api/projects/' + encodeURIComponent(projectId) + '/revisions/' +
+      encodeURIComponent(revisionNumber) + '/cut-again',
+    {
+      port: key.serial_port,
+      device: key.device,
+      baudrate: jQuery('#baudrate').val() || '9600',
+      tasmota: jQuery('#tasmota').is(':checked') ? 'on' : 'off',
+      operator_confirm_test: confirmed ? 'confirmed' : undefined
+    }
+  ).then(function(response) {
+    notify(response.data.message, 'success');
+  }).catch(function(error) {
+    if (error.response && error.response.status === 409 && error.response.data.requires_operator_confirmation) {
+      return UIkit.modal.confirm(error.response.data.error).then(function() {
+        return projectCutAgain(projectId, revisionNumber, true);
+      });
+    }
+    notify(error.response && error.response.data ? error.response.data.error : error.message, 'danger');
+  });
+}
+
+function loadProjectLibrary() {
+  var includeDeleted = jQuery('#projectShowDeleted').is(':checked');
+  jQuery('#projectLibrary').html('<div data-uk-spinner></div>');
+  return axios.get('/api/projects', { params: { include_deleted: includeDeleted } })
+    .then(function(response) {
+      var projects = response.data.projects || [];
+      if (!projects.length) {
+        jQuery('#projectLibrary').html('<p class="uk-text-muted">No saved projects yet.</p>');
+        return;
+      }
+      jQuery('#projectLibrary').html(projects.map(function(project) {
+        var thumb = project.latest_revision
+          ? '/api/projects/' + encodeURIComponent(project.id) + '/revisions/' +
+            project.latest_revision + '/thumbnail' : '';
+        var actions = project.deleted
+          ? '<button class="uk-button uk-button-primary uk-button-small project-restore">Restore</button>' +
+            '<button class="uk-button uk-button-danger uk-button-small project-purge">Purge</button>'
+          : '<button class="uk-button uk-button-primary uk-button-small project-open">Open latest</button>' +
+            '<button class="uk-button uk-button-default uk-button-small project-revisions">Revisions</button>' +
+            '<button class="uk-button uk-button-default uk-button-small project-recut">Cut again</button>' +
+            '<button class="uk-button uk-button-default uk-button-small project-edit">Edit details</button>' +
+            '<button class="uk-button uk-button-default uk-button-small project-duplicate">Duplicate</button>' +
+            '<button class="uk-button uk-button-danger uk-button-small project-delete">Delete</button>';
+        return '<article class="project-card ' + (project.deleted ? 'deleted' : '') +
+          '" data-project-id="' + workspaceEscape(project.id) +
+          '" data-revision="' + (project.latest_revision || '') + '">' +
+          (thumb ? '<img src="' + thumb + '" alt="Project thumbnail">' : '') +
+          '<h4>' + workspaceEscape(project.name) + '</h4>' +
+          '<p class="uk-text-meta">Revision ' + (project.latest_revision || '—') +
+          (project.tags.length ? ' • ' + workspaceEscape(project.tags.join(', ')) : '') + '</p>' +
+          '<div class="uk-flex uk-flex-wrap uk-flex-gap-small">' + actions + '</div></article>';
+      }).join(''));
+    });
+}
+
+function showProjectRevisions(projectId) {
+  axios.get('/api/projects/' + encodeURIComponent(projectId)).then(function(response) {
+    var project = response.data;
+    var html = '<h4>' + workspaceEscape(project.name) + ' revisions</h4>';
+    if (project.recovery_draft) {
+      html += '<button class="uk-button uk-button-warning uk-button-small project-open-draft" data-project-id="' +
+        workspaceEscape(projectId) + '">Open recovery draft (' +
+        workspaceEscape(project.recovery_draft.updated_at) + ')</button>';
+    }
+    html += '<ul class="uk-list uk-list-divider">' + project.revisions.map(function(revision) {
+      return '<li>Revision ' + revision.revision_number + ' • ' +
+        workspaceEscape(revision.created_at) +
+        ' <button class="uk-button uk-button-primary uk-button-small project-open-revision" data-project-id="' +
+        workspaceEscape(projectId) + '" data-revision="' + revision.revision_number + '">Open</button>' +
+        ' <button class="uk-button uk-button-default uk-button-small project-recut-revision" data-project-id="' +
+        workspaceEscape(projectId) + '" data-revision="' + revision.revision_number + '">Cut again</button></li>';
+    }).join('') + '</ul>';
+    jQuery('#projectRevisionList').html(html).data('project', project);
+  });
+}
+
+function bindProjectLibraryControls() {
+  jQuery('body').off('.projects')
+    .on('click.projects', '.actionOpenProjects', function(event) {
+      event.preventDefault();
+      jQuery('#projectRevisionList').empty();
+      UIkit.modal('#modal-projects').show();
+      loadProjectLibrary();
+    })
+    .on('click.projects', '#projectRefresh', function() { loadProjectLibrary(); })
+    .on('change.projects', '#projectShowDeleted', function() { loadProjectLibrary(); })
+    .on('click.projects', '.project-open', function() {
+      var card = jQuery(this).closest('.project-card');
+      workspaceOpenProjectRevision(card.data('project-id'), Number(card.data('revision')));
+    })
+    .on('click.projects', '.project-revisions', function() {
+      showProjectRevisions(jQuery(this).closest('.project-card').data('project-id'));
+    })
+    .on('click.projects', '.project-recut', function() {
+      var card = jQuery(this).closest('.project-card');
+      projectCutAgain(card.data('project-id'), Number(card.data('revision')), false);
+    })
+    .on('click.projects', '.project-open-revision', function() {
+      workspaceOpenProjectRevision(jQuery(this).data('project-id'), Number(jQuery(this).data('revision')));
+    })
+    .on('click.projects', '.project-history-open', function() {
+      workspaceOpenProjectRevision(jQuery(this).data('project-id'), Number(jQuery(this).data('revision')));
+    })
+    .on('click.projects', '.project-recut-revision', function() {
+      projectCutAgain(jQuery(this).data('project-id'), Number(jQuery(this).data('revision')), false);
+    })
+    .on('click.projects', '.project-open-draft', function() {
+      var project = jQuery('#projectRevisionList').data('project');
+      if (project && project.recovery_draft) {
+        workspaceOpenProjectRevision(
+          project.id,
+          project.revisions.length ? project.revisions[0].revision_number : 1,
+          project.recovery_draft.manifest
+        );
+      }
+    })
+    .on('click.projects', '.project-edit', function() {
+      var projectId = jQuery(this).closest('.project-card').data('project-id');
+      axios.get('/api/projects/' + encodeURIComponent(projectId)).then(function(response) {
+        var project = response.data;
+        return UIkit.modal.prompt('Project name', project.name).then(function(name) {
+          if (!name) return null;
+          return UIkit.modal.prompt('Project notes', project.notes || '').then(function(notes) {
+            return {name: name, notes: notes || '', tags: project.tags || [], material_profile_id: project.material_profile_id};
+          });
+        });
+      }).then(function(values) {
+        if (!values) return null;
+        return UIkit.modal.prompt('Tags, separated by commas', (values.tags || []).join(', ')).then(function(tags) {
+          values.tags = (tags || '').split(',').map(function(tag) { return tag.trim(); }).filter(Boolean);
+          return values;
+        });
+      }).then(function(values) {
+        if (!values) return null;
+        return axios.put('/api/projects/' + encodeURIComponent(projectId), values);
+      }).then(function(response) {
+        if (response) loadProjectLibrary();
+      });
+    })
+    .on('click.projects', '.project-duplicate', function() {
+      var card = jQuery(this).closest('.project-card');
+      var projectId = card.data('project-id');
+      UIkit.modal.prompt('Duplicate project name', card.find('h4').text() + ' copy')
+        .then(function(name) {
+          if (!name) return;
+          return axios.post('/api/projects/' + encodeURIComponent(projectId) + '/duplicate', {name: name});
+        }).then(function(response) {
+          if (response) {
+            notify('Project duplicated.', 'success');
+            loadProjectLibrary();
+          }
+        });
+    })
+    .on('click.projects', '.project-delete', function() {
+      var projectId = jQuery(this).closest('.project-card').data('project-id');
+      UIkit.modal.confirm('Soft-delete this project? It can be restored later.').then(function() {
+        return axios.delete('/api/projects/' + encodeURIComponent(projectId));
+      }).then(function() { loadProjectLibrary(); });
+    })
+    .on('click.projects', '.project-restore', function() {
+      var projectId = jQuery(this).closest('.project-card').data('project-id');
+      axios.post('/api/projects/' + encodeURIComponent(projectId) + '/restore')
+        .then(function() { loadProjectLibrary(); });
+    })
+    .on('click.projects', '.project-purge', function() {
+      var projectId = jQuery(this).closest('.project-card').data('project-id');
+      UIkit.modal.confirm(
+        'Permanently purge this already-deleted project and all revisions? This cannot be undone.'
+      ).then(function() {
+        return axios.post('/api/projects/' + encodeURIComponent(projectId) + '/purge');
+      }).then(function() { loadProjectLibrary(); });
+    });
 }
 
 function workspaceSyncControlsFromItem() {
@@ -900,6 +1265,9 @@ function workspaceApplyServerPreview(preview, resetView) {
   }
   workspaceSyncPlacementControls();
   workspaceRender(resetView);
+  if (cutterWorkspace.projectContext && cutterWorkspace.projectDirty) {
+    workspaceScheduleProjectDraft();
+  }
 }
 
 function workspaceRefreshPrepared(resetView) {
@@ -924,6 +1292,9 @@ function workspaceRefreshPrepared(resetView) {
 }
 
 function workspaceSchedulePreparation(resetView) {
+  if (cutterWorkspace.projectContext && !cutterWorkspace.restoringProject) {
+    cutterWorkspace.projectDirty = true;
+  }
   clearTimeout(cutterWorkspace.preparationTimer);
   cutterWorkspace.serverPreview = null;
   jQuery('#workspacePreparing').show();
@@ -931,6 +1302,26 @@ function workspaceSchedulePreparation(resetView) {
   cutterWorkspace.preparationTimer = setTimeout(function() {
     workspaceRefreshPrepared(resetView);
   }, 180);
+}
+
+function workspaceScheduleProjectDraft() {
+  if (!cutterWorkspace.projectContext || !cutterWorkspace.projectDirty) return;
+  clearTimeout(cutterWorkspace.projectDraftTimer);
+  cutterWorkspace.projectDraftTimer = setTimeout(function() {
+    axios.put(
+      '/api/projects/' + encodeURIComponent(cutterWorkspace.projectContext.projectId) + '/draft',
+      workspaceRequestData()
+    ).then(function() {
+      jQuery('#workspaceProjectStatus').text(
+        'Recovery draft saved • based on revision ' +
+        cutterWorkspace.projectContext.revisionNumber
+      );
+    }).catch(function(error) {
+      var message = error.response && error.response.data
+        ? error.response.data.error : error.message;
+      jQuery('#workspaceProjectStatus').text('Draft autosave failed: ' + message);
+    });
+  }, 1500);
 }
 
 function workspaceTravelPaths(paths) {
@@ -1201,7 +1592,11 @@ function workspaceClientPoint(event) {
 }
 
 function workspaceBindControls() {
+  jQuery('#workspaceSaveProject').off('.workspace').on('click.workspace', workspaceSaveProject);
   jQuery('#workspaceMaterialProfile').off('.workspace').on('change.workspace', function() {
+    if (cutterWorkspace.projectContext) {
+      cutterWorkspace.projectContext.useProfileSnapshot = false;
+    }
     cutterWorkspace.selectedProfileId = jQuery(this).val() || 'unprofiled';
     var profile = workspaceSelectedProfile();
     workspaceRenderProfile(profile);
@@ -1339,8 +1734,20 @@ function workspaceBindControls() {
     });
   });
   jQuery('#workspaceCalibrationEnabled').off('.workspace').on('change.workspace', function() {
+    var wasRevisionSnapshot = !!(
+      cutterWorkspace.projectContext
+      && cutterWorkspace.projectContext.useCalibrationSnapshot
+    );
+    if (cutterWorkspace.projectContext) {
+      cutterWorkspace.projectContext.useCalibrationSnapshot = false;
+    }
     var key = workspaceCutterKey();
     var enabled = jQuery(this).is(':checked');
+    if (wasRevisionSnapshot && !enabled) {
+      workspaceRenderCalibration(null);
+      workspaceSchedulePreparation(false);
+      return;
+    }
     axios.put('/api/cutter-calibrations', {
       serial_port: key.serial_port, device: key.device, enabled: enabled
     }).then(function(response) {
@@ -1554,16 +1961,25 @@ function workspaceGenerateHpgl() {
 }
 
 // Load either editable SVG geometry or an exact read-only HPGL path workspace.
-function previewFile(filename) {
+function previewFile(filename, options) {
+  options = options || {};
   var requestId = ++previewRequestId;
   cancelAnimationFrame(cutterWorkspace.animationFrame);
   cutterWorkspace.filename = filename; cutterWorkspace.payload = null; cutterWorkspace.view = null;
   cutterWorkspace.serverPreview = null;
+  cutterWorkspace.projectContext = options.projectContext || null;
+  cutterWorkspace.projectMetadata = options.projectMetadata || null;
+  cutterWorkspace.projectDirty = false;
+  cutterWorkspace.restoringProject = !!options.manifest;
+  clearTimeout(cutterWorkspace.projectDraftTimer);
   jQuery('#previewModalTitle').text('Cut workspace — ' + filename);
   jQuery('#previewError, #cutWorkspace').hide();
   jQuery('#previewSpinner').show();
   UIkit.modal('#modal-preview').show();
-  axios.get('/cut_workspace/' + encodeURIComponent(filename), { headers: { 'Cache-Control': 'no-cache' } })
+  axios.get(
+    options.sourceUrl || ('/cut_workspace/' + encodeURIComponent(filename)),
+    { headers: { 'Cache-Control': 'no-cache' } }
+  )
     .then(function(response) {
       if (requestId !== previewRequestId) return;
       var payload = response.data;
@@ -1595,9 +2011,12 @@ function previewFile(filename) {
         targetWidth: payload.width_mm, targetHeight: payload.height_mm,
         rotation: 0, mirrorX: false, mirrorY: false, copies: 1, placements: []
       }];
+      if (options.manifest) {
+        workspaceApplySavedManifest(options.manifest);
+      }
       cutterWorkspace.selectedItemIndex = 0;
       cutterWorkspace.selectedInstanceId = null;
-      cutterWorkspace.selectedProfileId = 'unprofiled';
+      if (!options.manifest) cutterWorkspace.selectedProfileId = 'unprofiled';
       cutterWorkspace.calibration = null;
       cutterWorkspace.calibrationCandidate = null;
       workspaceRenderDesignList();
@@ -1613,15 +2032,40 @@ function previewFile(filename) {
       jQuery('#workspaceRollWidth').prop('disabled', false);
       jQuery('#workspaceReadOnly').toggle(payload.read_only);
       jQuery('#workspaceGenerate').toggle(!payload.read_only);
+      jQuery('#workspaceSaveProject').toggle(!payload.read_only);
       jQuery('#previewWarning').toggle(payload.warnings.length > 0).text(payload.warnings.join(' '));
       workspaceBindControls();
+      if (cutterWorkspace.projectContext) {
+        jQuery('#workspaceProjectStatus').text(
+          (cutterWorkspace.projectMetadata ? cutterWorkspace.projectMetadata.name : 'Saved project') +
+          ' • ' + (options.isDraft ? 'recovery draft' : 'revision ' + cutterWorkspace.projectContext.revisionNumber)
+        );
+        jQuery('#workspaceSaveProject').text('Save new revision');
+      } else {
+        jQuery('#workspaceProjectStatus').text('');
+        jQuery('#workspaceSaveProject').text('Save as project');
+      }
       jQuery('#previewSpinner').hide(); jQuery('#cutWorkspace').show();
       workspaceRender(true);
       if (!payload.read_only) {
-        Promise.all([
-          workspaceLoadProfiles('unprofiled', false),
-          workspaceLoadCalibration()
-        ]).then(function() {
+        var productionLoad = options.manifest
+          ? Promise.all([
+            workspaceLoadProfiles(options.manifest.material_profile_id || 'unprofiled', false)
+              .then(function(profile) {
+                if (options.manifest.profile_snapshot && (
+                  !profile || profile.id !== options.manifest.profile_snapshot.id
+                )) workspaceRenderProfile(options.manifest.profile_snapshot);
+              }),
+            Promise.resolve(workspaceRenderCalibration(
+              options.manifest.calibration_snapshot || null
+            ))
+          ])
+          : Promise.all([
+            workspaceLoadProfiles('unprofiled', false),
+            workspaceLoadCalibration()
+          ]);
+        productionLoad.then(function() {
+          cutterWorkspace.restoringProject = false;
           workspaceRefreshPrepared(true);
         }).catch(function(error) {
           var message = error.response && error.response.data && error.response.data.error

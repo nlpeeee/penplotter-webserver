@@ -11,6 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import main
+import jobqueue
 import production_store
 import workspace
 
@@ -89,14 +90,24 @@ class TestConversionEndpoint(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.original_upload_path = main.app.config['UPLOAD_PATH']
         self.original_production_db = production_store.DB_PATH
+        self.original_projects_root = production_store.PROJECTS_ROOT
+        self.original_job_db = jobqueue.DB_PATH
+        self.original_spool_path = jobqueue.SPOOL_PATH
         main.app.config['UPLOAD_PATH'] = self.directory.name
         production_store.DB_PATH = str(Path(self.directory.name, 'production.db'))
+        production_store.PROJECTS_ROOT = str(Path(self.directory.name, 'projects'))
+        jobqueue.DB_PATH = str(Path(self.directory.name, 'jobs.db'))
+        jobqueue.SPOOL_PATH = str(Path(self.directory.name, 'spool'))
         production_store.init_db()
+        jobqueue.init_db()
         self.client = main.app.test_client()
 
     def tearDown(self):
         main.app.config['UPLOAD_PATH'] = self.original_upload_path
         production_store.DB_PATH = self.original_production_db
+        production_store.PROJECTS_ROOT = self.original_projects_root
+        jobqueue.DB_PATH = self.original_job_db
+        jobqueue.SPOOL_PATH = self.original_spool_path
         self.directory.cleanup()
 
     @patch.object(main, 'convert')
@@ -398,6 +409,112 @@ class TestConversionEndpoint(unittest.TestCase):
         })
         self.assertEqual(refused.status_code, 409)
         self.assertTrue(refused.get_json()['requires_operator_confirmation'])
+
+    def test_saved_project_is_self_contained_revisioned_and_recut_from_spool(self):
+        source = Path(self.directory.name, 'project.svg')
+        source.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm" viewBox="0 0 20 20">'
+            '<path d="M0 0H20V20H0Z"/></svg>'
+        )
+        workspace_request = {
+            'manifest_version': 1,
+            'roll_width_mm': 100,
+            'items': [{
+                'filename': 'project.svg',
+                'target_width_mm': 20,
+                'target_height_mm': 20,
+                'natural_width_mm': 20,
+                'natural_height_mm': 20,
+                'copies': 1,
+            }],
+            'layout': {'automatic': True, 'edge_margin_mm': 5, 'spacing_mm': 5},
+            'preparation': {},
+            'cutting_aids': {},
+            'material_profile_id': 'unprofiled',
+            'calibration': {'enabled': False},
+        }
+        preview = self.client.post('/api/workspace/preview', json=workspace_request).get_json()
+        workspace_request['geometry_hash'] = preview['geometry_hash']
+        saved = self.client.post('/api/projects', json={
+            'project': {'name': 'Reusable sign', 'notes': 'Keep', 'tags': ['sign']},
+            'workspace': workspace_request,
+        })
+        revision = saved.get_json()
+        self.assertEqual(saved.status_code, 201)
+        self.assertEqual(revision['revision_number'], 1)
+        project_id = revision['project_id']
+        asset_id = revision['manifest']['items'][0]['project_asset_id']
+        stored_hpgl = Path(revision['hpgl_path']).read_bytes()
+        source.unlink()
+
+        asset_preview = self.client.get(f'/api/project-assets/{asset_id}/workspace')
+        self.assertEqual(asset_preview.status_code, 200)
+        self.assertAlmostEqual(asset_preview.get_json()['width_mm'], 20, places=1)
+        historical = self.client.get(f'/api/projects/{project_id}/revisions/1')
+        self.assertEqual(historical.status_code, 200)
+        reopened_request = revision['manifest']
+        reopened_request['calibration']['revision_snapshot'] = True
+        reopened_request['project_context'] = {
+            'project_id': project_id,
+            'revision_number': 1,
+            'profile_snapshot': True,
+        }
+        reopened = self.client.post('/api/workspace/preview', json=reopened_request)
+        self.assertEqual(reopened.status_code, 200)
+        self.assertEqual(reopened.get_json()['geometry_hash'], revision['geometry_hash'])
+
+        draft_manifest = revision['manifest']
+        draft_manifest['geometry_hash'] = revision['geometry_hash']
+        draft = self.client.put(f'/api/projects/{project_id}/draft', json=draft_manifest)
+        self.assertEqual(draft.status_code, 200)
+        project = self.client.get(f'/api/projects/{project_id}').get_json()
+        self.assertIsNotNone(project['recovery_draft'])
+
+        repeated = self.client.post(
+            f'/api/projects/{project_id}/revisions/1/cut-again',
+            json={
+                'port': '/dev/serial/by-id/test',
+                'device': 'creation_1200',
+                'baudrate': '9600',
+            },
+        )
+        self.assertEqual(repeated.status_code, 200)
+        queued = jobqueue.get_recent_jobs(limit=1)[0]
+        self.assertEqual(queued['project_id'], project_id)
+        self.assertEqual(queued['project_revision'], 1)
+        self.assertEqual(Path(queued['file']).read_bytes(), stored_hpgl)
+
+        duplicate = self.client.post(
+            f'/api/projects/{project_id}/duplicate', json={'name': 'Reusable sign copy'}
+        )
+        self.assertEqual(duplicate.status_code, 201)
+        self.assertEqual(
+            Path(duplicate.get_json()['hpgl_path']).read_bytes(), stored_hpgl
+        )
+
+        deleted = self.client.delete(f'/api/projects/{project_id}')
+        self.assertTrue(deleted.get_json()['recoverable'])
+        self.assertTrue(Path(queued['file']).is_file())
+        purged = self.client.post(f'/api/projects/{project_id}/purge')
+        self.assertEqual(purged.status_code, 200)
+        self.assertTrue(Path(queued['file']).is_file())
+
+    def test_normal_plot_queue_snapshots_upload_bytes(self):
+        source = Path(self.directory.name, 'ordinary.hpgl')
+        expected = b'IN;SP1;PA;PU0,0;PD40,40;PU;SP0;'
+        source.write_bytes(expected)
+        queued_response = self.client.post('/start_plot', data={
+            'file': source.name,
+            'port': '/dev/serial/by-id/test',
+            'baudrate': '9600',
+            'device': 'creation_1200',
+        })
+        self.assertEqual(queued_response.status_code, 200)
+        job = jobqueue.get_recent_jobs(limit=1)[0]
+        self.assertNotEqual(Path(job['file']), source)
+        source.unlink()
+        self.assertEqual(Path(job['file']).read_bytes(), expected)
+        self.assertEqual(job['display_file'], 'ordinary.hpgl')
 
     @patch.object(main, 'svg_geometry_dimensions', return_value=(210.0, 105.0))
     def test_dimensions_endpoint_returns_aspect_ratio(self, _dimensions):

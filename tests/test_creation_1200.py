@@ -234,10 +234,18 @@ class TestJobQueue(unittest.TestCase):
         self._tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
         self._tmp.close()
         import jobqueue
+        self._original_db = jobqueue.DB_PATH
+        self._original_spool = jobqueue.SPOOL_PATH
+        self._spool = tempfile.TemporaryDirectory()
         jobqueue.DB_PATH = self._tmp.name
+        jobqueue.SPOOL_PATH = self._spool.name
         jobqueue.init_db()
 
     def tearDown(self):
+        import jobqueue
+        jobqueue.DB_PATH = self._original_db
+        jobqueue.SPOOL_PATH = self._original_spool
+        self._spool.cleanup()
         os.unlink(self._tmp.name)
 
     def test_enqueue_and_get_next(self):
@@ -340,6 +348,25 @@ class TestJobQueue(unittest.TestCase):
         self.assertEqual(errors, [], f'Thread-safety errors: {errors}')
         jobs = jobqueue.get_recent_jobs(limit=100)
         self.assertEqual(len(jobs), 50, 'All 50 jobs must be stored')
+
+    def test_spooled_job_survives_source_deletion_and_links_project(self):
+        import jobqueue
+        source = tempfile.NamedTemporaryFile(suffix='.hpgl', delete=False)
+        source.write(b'IN;PU0,0;PD40,40;')
+        source.close()
+        spooled = jobqueue.snapshot_for_queue(source.name)
+        os.unlink(source.name)
+        with open(spooled, 'rb') as snapshot:
+            self.assertEqual(snapshot.read(), b'IN;PU0,0;PD40,40;')
+        jid = jobqueue.enqueue_job(
+            spooled, '/dev/p', display_file='Saved sign.hpgl',
+            project_id='project-id', project_revision=3,
+        )
+        job = jobqueue.get_recent_jobs(limit=1)[0]
+        self.assertEqual(job['id'], jid)
+        self.assertEqual(job['display_file'], 'Saved sign.hpgl')
+        self.assertEqual(job['project_id'], 'project-id')
+        self.assertEqual(job['project_revision'], 3)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

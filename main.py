@@ -10,7 +10,7 @@ import configparser
 import sqlite3
 import re
 
-from flask import Flask, Response, render_template, request, redirect, url_for, abort, send_from_directory, jsonify
+from flask import Flask, Response, render_template, request, redirect, url_for, abort, send_from_directory, send_file, jsonify
 from werkzeug.utils import secure_filename
 from flask_socketio import SocketIO, emit
 
@@ -48,7 +48,7 @@ def _emit_job_update():
 def _execute_job(job):
     """Run a single plot job, updating its status throughout."""
     job_id = job['id']
-    fname = os.path.basename(job['file'])
+    fname = job.get('display_file') or os.path.basename(job['file'])
 
     _emit_job_update()
     socketio.emit('status_log', {'data': f'[Job {job_id}] Transmitting: {fname}'})
@@ -252,13 +252,21 @@ def _workspace_svg_request(data):
     for raw_item in raw_items:
         if not isinstance(raw_item, dict):
             raise workspace.WorkspaceError('Every workspace design must be an object.')
-        filename = raw_item.get('filename', '')
-        safe_filename = secure_filename(filename)
-        if not safe_filename or safe_filename != filename or not safe_filename.lower().endswith('.svg'):
-            raise workspace.WorkspaceError('Invalid SVG filename.')
-        filepath = os.path.join(app.config['UPLOAD_PATH'], safe_filename)
-        if not os.path.isfile(filepath):
-            raise FileNotFoundError('The selected SVG file does not exist: ' + safe_filename)
+        asset_id = str(raw_item.get('project_asset_id') or '')
+        if asset_id:
+            asset = production_store.get_project_asset(asset_id)
+            if not asset or asset['media_type'] != 'svg' or not os.path.isfile(asset['stored_path']):
+                raise FileNotFoundError('The selected project SVG asset does not exist.')
+            safe_filename = asset['original_filename']
+            filepath = asset['stored_path']
+        else:
+            filename = raw_item.get('filename', '')
+            safe_filename = secure_filename(filename)
+            if not safe_filename or safe_filename != filename or not safe_filename.lower().endswith('.svg'):
+                raise workspace.WorkspaceError('Invalid SVG filename.')
+            filepath = os.path.join(app.config['UPLOAD_PATH'], safe_filename)
+            if not os.path.isfile(filepath):
+                raise FileNotFoundError('The selected SVG file does not exist: ' + safe_filename)
         values = dict(raw_item)
         values['roll_width_mm'] = roll_width
         values.setdefault('offset_x_mm', 0)
@@ -269,12 +277,35 @@ def _workspace_svg_request(data):
             'transform': workspace.parse_transform(values),
             'copies': raw_item.get('copies', 1),
             'placements': raw_item.get('placements') or [],
+            'project_asset_id': asset_id or None,
         })
     preparation = workspace.parse_preparation(data.get('preparation') or {})
     layout = workspace.parse_layout(data.get('layout') or {})
     cutting_aids = workspace.parse_cutting_aids(data.get('cutting_aids') or {})
     calibration_request = data.get('calibration') or {}
-    if workspace._truthy(calibration_request.get('enabled', False)):
+    project_context = data.get('project_context') or {}
+    stored_revision = None
+    if (
+        project_context
+        and (
+            calibration_request.get('revision_snapshot')
+            or project_context.get('profile_snapshot')
+        )
+    ):
+        if project_context.get('draft_snapshot'):
+            draft_project = production_store.get_project(project_context.get('project_id'))
+            if draft_project and draft_project.get('recovery_draft'):
+                stored_revision = {'manifest': draft_project['recovery_draft']['manifest']}
+        else:
+            stored_revision = production_store.get_project_revision(
+                project_context.get('project_id'), project_context.get('revision_number')
+            )
+        if stored_revision is None:
+            raise workspace.WorkspaceError('The source project revision does not exist.')
+    if calibration_request.get('revision_snapshot') and stored_revision:
+        snapshot = stored_revision['manifest'].get('calibration_snapshot') or {}
+        calibration = workspace.parse_calibration(snapshot)
+    elif workspace._truthy(calibration_request.get('enabled', False)):
         serial_port = str(calibration_request.get('serial_port', ''))
         device = str(calibration_request.get('device', ''))
         stored_calibration = production_store.get_calibration(serial_port, device)
@@ -297,7 +328,10 @@ def _workspace_svg_request(data):
             device=str(calibration_request.get('device', ''))[:100],
         )
     profile_id = str(data.get('material_profile_id') or production_store.UNPROFILED_ID)
-    profile_snapshot = production_store.get_profile(profile_id)
+    if stored_revision and project_context.get('profile_snapshot'):
+        profile_snapshot = stored_revision['manifest'].get('profile_snapshot')
+    else:
+        profile_snapshot = production_store.get_profile(profile_id)
     if profile_snapshot is None:
         raise workspace.WorkspaceError('The selected material profile does not exist.')
     return (
@@ -555,6 +589,303 @@ def cutter_calibration_pattern_api():
     })
 
 
+def _project_thumbnail(paths, metadata):
+    path_data = []
+    for path in paths:
+        if len(path) < 2:
+            continue
+        path_data.append(
+            'M' + ' L'.join(f'{x:.3f},{y:.3f}' for x, y in path)
+        )
+    width = max(metadata['max_x_mm'] - metadata['min_x_mm'], 0.1)
+    height = max(metadata['max_y_mm'] - metadata['min_y_mm'], 0.1)
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200" '
+        f'viewBox="{metadata["min_x_mm"]:.3f} {metadata["min_y_mm"]:.3f} '
+        f'{width:.3f} {height:.3f}" preserveAspectRatio="xMidYMid meet">'
+        '<rect width="100%" height="100%" fill="#17232d"/>'
+        + ''.join(
+            f'<path d="{data}" fill="none" stroke="#e11d48" '
+            'stroke-width=".35" vector-effect="non-scaling-stroke"/>'
+            for data in path_data
+        )
+        + '</svg>'
+    )
+    return svg.encode('utf-8')
+
+
+def _canonical_project_manifest(data, metadata):
+    return {
+        'manifest_version': 1,
+        'roll_width_mm': data.get('roll_width_mm', 1200),
+        'items': [
+            {
+                key: item.get(key)
+                for key in (
+                    'filename', 'project_asset_id', 'target_width_mm',
+                    'target_height_mm', 'rotation', 'mirror_x', 'mirror_y',
+                    'copies', 'placements', 'natural_width_mm',
+                    'natural_height_mm',
+                )
+                if item.get(key) is not None
+            }
+            for item in data.get('items', [])
+        ],
+        'layout': data.get('layout') or {},
+        'preparation': data.get('preparation') or {},
+        'cutting_aids': data.get('cutting_aids') or {},
+        'material_profile_id': data.get('material_profile_id') or production_store.UNPROFILED_ID,
+        'profile_snapshot': metadata.get('profile_snapshot'),
+        'calibration': data.get('calibration') or {},
+        'calibration_snapshot': metadata.get('calibration'),
+    }
+
+
+def _save_project_request(project_id=None):
+    data = request.get_json(silent=True) or {}
+    workspace_data = data.get('workspace') or {}
+    if not isinstance(workspace_data.get('items'), list) or not workspace_data.get('items'):
+        return jsonify({'error': 'A project workspace must contain source design items.'}), 422
+    expected_hash = workspace_data.get('geometry_hash')
+    try:
+        (
+            items, roll_width, layout, preparation, cutting_aids,
+            calibration, profile_snapshot,
+        ) = _workspace_svg_request(workspace_data)
+        paths, metadata = workspace.build_manifest_preview(
+            items, roll_width, layout, preparation, cutting_aids, calibration
+        )
+        metadata['profile_snapshot'] = profile_snapshot
+        if not metadata['valid']:
+            raise workspace.WorkspaceError(
+                'The workspace must be valid before saving a project revision.'
+            )
+        if expected_hash and expected_hash != metadata['geometry_hash']:
+            raise workspace.WorkspaceError(
+                'The workspace changed after preview. Refresh it before saving.'
+            )
+        project_values = data.get('project') or {}
+        project_values['material_profile_id'] = (
+            workspace_data.get('material_profile_id') or production_store.UNPROFILED_ID
+        )
+        manifest = _canonical_project_manifest(workspace_data, metadata)
+        sources = [
+            {
+                'item_index': index,
+                'source_path': item['filepath'],
+                'original_filename': item['filename'],
+            }
+            for index, item in enumerate(items)
+        ]
+        revision = production_store.save_project_revision(
+            project_values,
+            manifest,
+            sources,
+            workspace.hpgl_bytes(paths),
+            _project_thumbnail(paths, metadata),
+            metadata['geometry_hash'],
+            project_id=project_id,
+        )
+        return jsonify(revision), 201
+    except FileNotFoundError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except (workspace.WorkspaceError, ValueError, OSError, sqlite3.IntegrityError) as exc:
+        return jsonify({'error': str(exc)}), 422
+
+
+@app.route('/api/projects', methods=['GET', 'POST'])
+def projects_api():
+    if request.method == 'GET':
+        return jsonify({
+            'projects': production_store.list_projects(
+                include_deleted=request.args.get('include_deleted') == 'true'
+            )
+        })
+    return _save_project_request()
+
+
+@app.route('/api/projects/<project_id>', methods=['GET', 'PUT', 'DELETE'])
+def project_api(project_id):
+    if request.method == 'GET':
+        project = production_store.get_project(
+            project_id, include_deleted=request.args.get('include_deleted') == 'true'
+        )
+        return (jsonify(project), 200) if project else (jsonify({'error': 'Project not found.'}), 404)
+    if request.method == 'DELETE':
+        if not production_store.soft_delete_project(project_id):
+            return jsonify({'error': 'Project not found.'}), 404
+        return jsonify({'deleted': True, 'recoverable': True})
+    try:
+        project = production_store.update_project(
+            project_id, request.get_json(silent=True) or {}
+        )
+    except (ValueError, sqlite3.IntegrityError) as exc:
+        return jsonify({'error': str(exc)}), 422
+    return (jsonify(project), 200) if project else (jsonify({'error': 'Project not found.'}), 404)
+
+
+@app.route('/api/projects/<project_id>/revisions', methods=['POST'])
+def project_revision_create_api(project_id):
+    return _save_project_request(project_id)
+
+
+@app.route('/api/projects/<project_id>/revisions/<int:revision_number>')
+def project_revision_api(project_id, revision_number):
+    revision = production_store.get_project_revision(project_id, revision_number)
+    return (jsonify(revision), 200) if revision else (jsonify({'error': 'Revision not found.'}), 404)
+
+
+@app.route('/api/project-assets/<asset_id>/workspace')
+def project_asset_workspace_api(asset_id):
+    asset = production_store.get_project_asset(asset_id)
+    if not asset or asset['media_type'] != 'svg' or not os.path.isfile(asset['stored_path']):
+        return jsonify({'error': 'Project SVG asset not found.'}), 404
+    try:
+        payload = workspace.workspace_payload(asset['stored_path'])
+    except workspace.WorkspaceError as exc:
+        return jsonify({'error': str(exc)}), 422
+    payload['project_asset_id'] = asset_id
+    payload['filename'] = asset['original_filename']
+    return jsonify(payload)
+
+
+@app.route('/api/projects/<project_id>/revisions/<int:revision_number>/thumbnail')
+def project_thumbnail_api(project_id, revision_number):
+    revision = production_store.get_project_revision(project_id, revision_number)
+    if not revision or not os.path.isfile(revision['thumbnail_path']):
+        return jsonify({'error': 'Project thumbnail not found.'}), 404
+    return send_file(revision['thumbnail_path'], mimetype='image/svg+xml', max_age=0)
+
+
+@app.route('/api/projects/<project_id>/draft', methods=['PUT'])
+def project_draft_api(project_id):
+    data = request.get_json(silent=True) or {}
+    try:
+        items, _roll, _layout, _prep, _aids, _calibration, _profile = _workspace_svg_request(data)
+        sources = [
+            {
+                'item_index': index,
+                'source_path': item['filepath'],
+                'original_filename': item['filename'],
+            }
+            for index, item in enumerate(items)
+        ]
+        manifest = _canonical_project_manifest(data, {
+            'profile_snapshot': _profile,
+            'calibration': {
+                'enabled': _calibration.enabled,
+                'factor_x': _calibration.factor_x,
+                'factor_y': _calibration.factor_y,
+                'serial_port': _calibration.serial_port,
+                'device': _calibration.device,
+            },
+        })
+        return jsonify(production_store.save_recovery_draft(
+            project_id, manifest, sources
+        ))
+    except (FileNotFoundError, ValueError, workspace.WorkspaceError) as exc:
+        return jsonify({'error': str(exc)}), 422
+
+
+@app.route('/api/projects/<project_id>/restore', methods=['POST'])
+def project_restore_api(project_id):
+    project = production_store.restore_project(project_id)
+    return (jsonify(project), 200) if project else (jsonify({'error': 'Deleted project not found.'}), 404)
+
+
+@app.route('/api/projects/<project_id>/purge', methods=['POST'])
+def project_purge_api(project_id):
+    try:
+        if not production_store.purge_project(project_id):
+            return jsonify({'error': 'Project not found.'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 422
+    return jsonify({'purged': True})
+
+
+@app.route('/api/projects/<project_id>/duplicate', methods=['POST'])
+def project_duplicate_api(project_id):
+    values = request.get_json(silent=True) or {}
+    source = production_store.get_project(project_id)
+    if source is None or not source['revisions']:
+        return jsonify({'error': 'Project revision not found.'}), 404
+    revision_number = int(values.get('revision_number') or source['revisions'][0]['revision_number'])
+    revision = production_store.get_project_revision(project_id, revision_number)
+    try:
+        sources = []
+        for index, item in enumerate(revision['manifest'].get('items', [])):
+            asset = production_store.get_project_asset(item.get('project_asset_id'))
+            if not asset:
+                raise ValueError('Project source asset not found.')
+            sources.append({
+                'item_index': index,
+                'source_path': asset['stored_path'],
+                'original_filename': asset['original_filename'],
+            })
+        with open(revision['hpgl_path'], 'rb') as hpgl_source:
+            hpgl_data = hpgl_source.read()
+        with open(revision['thumbnail_path'], 'rb') as thumbnail_source:
+            thumbnail_data = thumbnail_source.read()
+        duplicate = production_store.save_project_revision(
+            {
+                'name': values.get('name') or source['name'] + ' copy',
+                'notes': source['notes'],
+                'tags': source['tags'],
+                'material_profile_id': source['material_profile_id'],
+            },
+            revision['manifest'],
+            sources,
+            hpgl_data,
+            thumbnail_data,
+            revision['geometry_hash'],
+        )
+        return jsonify(duplicate), 201
+    except (ValueError, OSError, sqlite3.IntegrityError) as exc:
+        return jsonify({'error': str(exc)}), 422
+
+
+@app.route('/api/projects/<project_id>/revisions/<int:revision_number>/cut-again', methods=['POST'])
+def project_cut_again_api(project_id, revision_number):
+    revision = production_store.get_project_revision(project_id, revision_number)
+    if not revision or not os.path.isfile(revision['hpgl_path']):
+        return jsonify({'error': 'Stored project HPGL not found.'}), 404
+    if revision['project'].get('deleted'):
+        return jsonify({'error': 'Restore the soft-deleted project before cutting it.'}), 422
+    values = request.get_json(silent=True) or {}
+    if not values.get('port'):
+        return jsonify({'error': 'A serial port is required.'}), 422
+    source_names = [
+        item.get('filename', '') for item in revision['manifest'].get('items', [])
+    ]
+    if any(name.startswith(('PCP_compensation_test', 'PCP_calibration_100mm')) for name in source_names):
+        if values.get('operator_confirm_test') != 'confirmed':
+            return jsonify({
+                'error': 'Confirm media and tool readiness before repeating this physical test.',
+                'requires_operator_confirmation': True,
+            }), 409
+    try:
+        spooled = jobqueue.snapshot_for_queue(revision['hpgl_path'])
+        display_file = f"{revision['project']['name']} — revision {revision_number}.hpgl"
+        job_id = jobqueue.enqueue_job(
+            spooled,
+            values.get('port'),
+            values.get('baudrate') or '9600',
+            values.get('device') or 'creation_1200',
+            values.get('tasmota') or 'off',
+            display_file=display_file,
+            project_id=project_id,
+            project_revision=revision_number,
+        )
+    except OSError as exc:
+        return jsonify({'error': str(exc)}), 422
+    _emit_job_update()
+    globals.job_worker_event.set()
+    return jsonify({
+        'job_id': job_id,
+        'message': f'Project revision {revision_number} queued byte-for-byte.',
+    })
+
+
 @app.route('/svg_dimensions/<filename>')
 def svg_dimensions(filename):
     """Return the SVG cut geometry's natural aspect ratio and dimensions."""
@@ -695,7 +1026,11 @@ def start_plot():
                 'requires_operator_confirmation': True,
             }), 409
 
-        job_id = jobqueue.enqueue_job(file, port, baudrate, device, tasmota_ctrl)
+        spooled_file = jobqueue.snapshot_for_queue(file)
+        job_id = jobqueue.enqueue_job(
+            spooled_file, port, baudrate, device, tasmota_ctrl,
+            display_file=filename,
+        )
         _emit_job_update()
         socketio.emit('status_log', {'data': f'[Job {job_id}] Queued: {os.path.basename(file)}'})
 
